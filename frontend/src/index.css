@@ -1,5 +1,3 @@
-/* ===== GLOBAL RESET (REMOVES VITE WIDTH LIMITS) ===== */
-
 * {
   box-sizing: border-box;
 }
@@ -11,7 +9,7 @@ html, body {
   height: 100%;
   background: #0f0f0f;
   color: #eaeaea;
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: Inter, system-ui, sans-serif;
 }
 
 #root {

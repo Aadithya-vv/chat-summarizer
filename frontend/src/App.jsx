@@ -18,17 +18,14 @@ function App() {
       const res = await fetch("http://127.0.0.1:8000/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_text: chat,
-          mode: "tldr"
-        })
+        body: JSON.stringify({ chat_text: chat })
       });
 
       const data = await res.json();
-      setSummary(data.summary || data.result || "");
-    } catch (err) {
-      console.error(err);
-      setSummary("Error: Could not generate summary.");
+      setSummary(data.summary || "");
+    } catch (e) {
+      console.error(e);
+      setSummary("Error generating summary.");
     } finally {
       setLoading(false);
     }
@@ -61,9 +58,9 @@ function App() {
 
           <textarea
             className="textarea"
-            placeholder="Paste your unread chat messages here…"
             value={chat}
-            onChange={(e) => setChat(e.target.value)}
+            onChange={e => setChat(e.target.value)}
+            placeholder="Paste chat here…"
             disabled={loading}
           />
 
@@ -96,10 +93,8 @@ function App() {
             {!summary && !loading && (
               <div className="placeholder">Summary will appear here</div>
             )}
-
             {loading && <div className="placeholder">Thinking…</div>}
-
-            {summary && <SmartSummaryRenderer text={summary} />}
+            {summary && <SafeSummaryRenderer text={summary} />}
           </div>
         </section>
       </div>
@@ -107,52 +102,58 @@ function App() {
   );
 }
 
-/* ===== SMART RENDERER ===== */
+/* ================= SAFE RENDERERS ================= */
 
-function SmartSummaryRenderer({ text }) {
-  const hasStructuredSections =
-    text.includes("🧠") ||
-    text.includes("✅") ||
-    text.includes("🛠");
+function SafeSummaryRenderer({ text }) {
+  try {
+    const hasSections =
+      text.includes("🧠") ||
+      text.includes("✅") ||
+      text.includes("🛠");
 
-  if (hasStructuredSections) {
+    if (!hasSections) {
+      return <pre className="raw-output">{text}</pre>;
+    }
+
     return <FormattedSummary text={text} />;
+  } catch (e) {
+    console.error("Render error:", e);
+    return <pre className="raw-output">{text}</pre>;
   }
-
-  // Fallback: render raw text cleanly
-  return <pre className="raw-output">{text}</pre>;
 }
-
-/* ===== FORMATTED SUMMARY ===== */
 
 function FormattedSummary({ text }) {
   const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
-  let section = "";
-  const data = {};
 
-  lines.forEach(line => {
-    if (line.startsWith("🧠")) {
-      section = "Main Topics";
-      data[section] = [];
-    } else if (line.startsWith("✅")) {
-      section = "Decisions";
-      data[section] = [];
-    } else if (line.startsWith("🛠")) {
-      section = "Action Items";
-      data[section] = [];
-    } else if (line.startsWith("-") || line.startsWith("•")) {
-      if (section) data[section].push(line.replace(/^[-•]\s*/, ""));
+  const data = {
+    "Main Topics": [],
+    "Decisions": [],
+    "Action Items": []
+  };
+
+  let current = null;
+
+  for (const line of lines) {
+    if (line.startsWith("🧠")) current = "Main Topics";
+    else if (line.startsWith("✅")) current = "Decisions";
+    else if (line.startsWith("🛠")) current = "Action Items";
+    else if (line.startsWith("-") && current) {
+      data[current].push(line.replace(/^-\s*/, ""));
     }
-  });
+  }
 
   return (
     <div>
       {Object.entries(data).map(([title, items]) => (
         <div key={title} className="section">
           <div className="section-title">{title}</div>
-          {items.map((item, i) => (
-            <div key={i} className="bullet">• {item}</div>
-          ))}
+          {items.length === 0 ? (
+            <div className="bullet">• None</div>
+          ) : (
+            items.map((item, i) => (
+              <div key={i} className="bullet">• {item}</div>
+            ))
+          )}
         </div>
       ))}
     </div>
