@@ -16,14 +16,19 @@ function App() {
     setCopied(false);
 
     try {
-      const res = await fetch("https://ungovernable-noncohesively-maryln.ngrok-free.dev/docs#/default/summarize", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_text: chat,
-          model: model
-        })
-      });
+      const res = await fetch(
+        "https://ungovernable-noncohesively-maryln.ngrok-free.dev/summarize",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            chat_text: chat,
+            model: model
+          })
+        }
+      );
 
       const data = await res.json();
       setSummary(data.summary || "");
@@ -61,7 +66,6 @@ function App() {
           <header className="panel-header row">
             <span>Chat Input</span>
 
-            {/* MODEL SELECT */}
             <select
               value={model}
               onChange={e => setModel(e.target.value)}
