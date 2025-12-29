@@ -6,6 +6,7 @@ function App() {
   const [summary, setSummary] = useState("");
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [model, setModel] = useState("accurate"); // fast | accurate
 
   async function summarizeChat() {
     if (!chat.trim()) return;
@@ -15,10 +16,13 @@ function App() {
     setCopied(false);
 
     try {
-      const res = await fetch("http://127.0.0.1:8000/summarize", {
+      const res = await fetch("https://ungovernable-noncohesively-maryln.ngrok-free.dev/docs#/default/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_text: chat })
+        body: JSON.stringify({
+          chat_text: chat,
+          model: model
+        })
       });
 
       const data = await res.json();
@@ -54,7 +58,24 @@ function App() {
       <div className="container">
         {/* CHAT PANEL */}
         <section className="panel">
-          <header className="panel-header">Chat Input</header>
+          <header className="panel-header row">
+            <span>Chat Input</span>
+
+            {/* MODEL SELECT */}
+            <select
+              value={model}
+              onChange={e => setModel(e.target.value)}
+              style={{
+                background: "#1f1f1f",
+                color: "#ddd",
+                border: "1px solid #333",
+                padding: "4px 8px"
+              }}
+            >
+              <option value="fast">⚡ Fast</option>
+              <option value="accurate">🧠 Accurate</option>
+            </select>
+          </header>
 
           <textarea
             className="textarea"
@@ -102,24 +123,17 @@ function App() {
   );
 }
 
-/* ================= SAFE RENDERERS ================= */
+/* ---------- SAFE RENDERERS ---------- */
 
 function SafeSummaryRenderer({ text }) {
-  try {
-    const hasSections =
-      text.includes("🧠") ||
-      text.includes("✅") ||
-      text.includes("🛠");
+  const structured =
+    text.includes("🧠") || text.includes("✅") || text.includes("🛠");
 
-    if (!hasSections) {
-      return <pre className="raw-output">{text}</pre>;
-    }
-
-    return <FormattedSummary text={text} />;
-  } catch (e) {
-    console.error("Render error:", e);
+  if (!structured) {
     return <pre className="raw-output">{text}</pre>;
   }
+
+  return <FormattedSummary text={text} />;
 }
 
 function FormattedSummary({ text }) {
