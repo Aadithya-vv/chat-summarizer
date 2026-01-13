@@ -1,113 +1,193 @@
+/* PAGE BASE */
 .page {
-  display: flex;
-  justify-content: center;
-  padding: 20px;
   min-height: 100vh;
+  background: #0b0f19;
+  color: #e5e7eb;
+  padding: 16px;
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 }
 
 .container {
-  display: flex;
-  gap: 24px;
-  width: 100%;
-  max-width: 1800px;
+  max-width: 1100px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
 }
 
+/* PANELS */
 .panel {
-  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
   display: flex;
   flex-direction: column;
-  background: #0f0f0f;
-  border: 1px solid #222;
-  border-radius: 10px;
+  min-height: 540px;
 }
 
 .panel-header {
-  padding: 12px 16px;
-  font-size: 14px;
-  color: #aaa;
-  border-bottom: 1px solid #222;
+  font-weight: 600;
+  font-size: 16px;
+  margin-bottom: 10px;
 }
 
-.panel-header.row {
+.row {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
 
-.actions button {
-  margin-left: 8px;
-  background: #1f1f1f;
-  color: #ddd;
-  border: 1px solid #333;
-  padding: 6px 12px;
+.header-controls {
+  display: flex;
+  gap: 8px;
+}
+
+select {
+  background: #111827;
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding: 6px 10px;
+  outline: none;
   cursor: pointer;
 }
 
-.actions button:disabled {
-  opacity: 0.4;
+.hint {
+  margin: 0 0 10px 0;
+  font-size: 13px;
+  color: rgba(229, 231, 235, 0.75);
 }
 
+/* TEXTAREA */
 .textarea {
+  width: 100%;
   flex: 1;
-  padding: 18px;
-  background: #0f0f0f;
-  color: #fff;
-  border: none;
-  outline: none;
   resize: none;
+  border-radius: 14px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: #e5e7eb;
+  outline: none;
+  line-height: 1.4;
   font-size: 14px;
-  line-height: 1.6;
 }
 
+.textarea::placeholder {
+  color: rgba(229, 231, 235, 0.45);
+}
+
+/* FOOTER */
 .panel-footer {
-  padding: 12px;
-  border-top: 1px solid #222;
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .primary-btn {
-  background: #1f1f1f;
-  color: #fff;
-  border: 1px solid #333;
-  padding: 8px 18px;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 12px;
+  padding: 10px 14px;
   cursor: pointer;
+  font-weight: 600;
+  width: 100%;
 }
 
+.secondary-btn {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-weight: 600;
+  width: 50%;
+}
+
+.primary-btn:disabled,
+.secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* SUMMARY OUTPUT */
 .output {
   flex: 1;
-  padding: 18px;
+  border-radius: 14px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
   overflow-y: auto;
+  white-space: pre-wrap;
 }
 
 .placeholder {
-  color: #666;
+  color: rgba(229, 231, 235, 0.55);
+  font-size: 14px;
 }
 
+/* ACTION BUTTONS */
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.actions button {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e5e7eb;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* SECTIONS */
 .section {
-  margin-bottom: 22px;
+  margin-bottom: 14px;
 }
 
 .section-title {
-  font-size: 13px;
-  color: #bbb;
-  margin-bottom: 8px;
+  font-weight: 700;
+  margin-bottom: 6px;
+  font-size: 14px;
 }
 
 .bullet {
-  font-size: 14px;
-  line-height: 1.6;
+  margin-left: 6px;
   margin-bottom: 6px;
+  font-size: 14px;
+  color: rgba(229, 231, 235, 0.92);
 }
 
 .raw-output {
   white-space: pre-wrap;
-  font-size: 14px;
-  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  color: rgba(229, 231, 235, 0.92);
 }
 
+/* MOBILE RESPONSIVE */
 @media (max-width: 900px) {
   .container {
-    flex-direction: column;
+    grid-template-columns: 1fr;
+  }
+
+  .panel {
+    min-height: 420px;
+  }
+
+  .secondary-btn {
+    width: 40%;
   }
 }

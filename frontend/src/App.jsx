@@ -6,7 +6,9 @@ function App() {
   const [summary, setSummary] = useState("");
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+
   const [model, setModel] = useState("accurate"); // fast | accurate
+  const [lastN, setLastN] = useState(100); // 50 | 100 | 300
 
   async function summarizeChat() {
     if (!chat.trim()) return;
@@ -16,25 +18,29 @@ function App() {
     setCopied(false);
 
     try {
-      const res = await fetch(
-        "https://ungovernable-noncohesively-maryln.ngrok-free.dev/summarize",
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            chat_text: chat,
-            model: model
-          })
-        }
-      );
+      // ⚠️ IMPORTANT:
+      // Replace this with your real backend URL (ngrok / render / railway)
+      const BACKEND_URL = " https://ungovernable-noncohesively-maryln.ngrok-free.dev/summarize";
+
+      const res = await fetch(BACKEND_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_text: chat,
+          model: model,
+          last_n: lastN
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP error: ${res.status}`);
+      }
 
       const data = await res.json();
       setSummary(data.summary || "");
     } catch (e) {
       console.error(e);
-      setSummary("Error generating summary.");
+      setSummary("❌ Error generating summary.");
     } finally {
       setLoading(false);
     }
@@ -58,6 +64,12 @@ function App() {
     URL.revokeObjectURL(url);
   }
 
+  function clearAll() {
+    setChat("");
+    setSummary("");
+    setCopied(false);
+  }
+
   return (
     <div className="page">
       <div className="container">
@@ -66,35 +78,46 @@ function App() {
           <header className="panel-header row">
             <span>Chat Input</span>
 
-            <select
-              value={model}
-              onChange={e => setModel(e.target.value)}
-              style={{
-                background: "#1f1f1f",
-                color: "#ddd",
-                border: "1px solid #333",
-                padding: "4px 8px"
-              }}
-            >
-              <option value="fast">⚡ Fast</option>
-              <option value="accurate">🧠 Accurate</option>
-            </select>
+            <div className="header-controls">
+              {/* MODEL SELECT */}
+              <select
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              >
+                <option value="fast">⚡ Fast</option>
+                <option value="accurate">🧠 Accurate</option>
+              </select>
+
+              {/* LAST N SELECT */}
+              <select
+                value={lastN}
+                onChange={(e) => setLastN(Number(e.target.value))}
+              >
+                <option value={50}>Last 50 msgs</option>
+                <option value={100}>Last 100 msgs</option>
+                <option value={300}>Last 300 msgs</option>
+              </select>
+            </div>
           </header>
+
+          <p className="hint">
+            📱 Mobile tip: If you export a huge chat, this app summarizes only the most recent messages (like unread).
+          </p>
 
           <textarea
             className="textarea"
             value={chat}
-            onChange={e => setChat(e.target.value)}
-            placeholder="Paste chat here…"
+            onChange={(e) => setChat(e.target.value)}
+            placeholder="Paste unread / recent chat messages here…"
             disabled={loading}
           />
 
           <footer className="panel-footer">
-            <button
-              className="primary-btn"
-              onClick={summarizeChat}
-              disabled={loading}
-            >
+            <button className="secondary-btn" onClick={clearAll} disabled={loading && !chat}>
+              Clear
+            </button>
+
+            <button className="primary-btn" onClick={summarizeChat} disabled={loading}>
               {loading ? "Summarizing…" : "Summarize"}
             </button>
           </footer>
@@ -131,7 +154,7 @@ function App() {
 
 function SafeSummaryRenderer({ text }) {
   const structured =
-    text.includes("🧠") || text.includes("✅") || text.includes("🛠");
+    text.includes("🧠") || text.includes("✅") || text.includes("🛠") || text.includes("📌");
 
   if (!structured) {
     return <pre className="raw-output">{text}</pre>;
@@ -141,12 +164,13 @@ function SafeSummaryRenderer({ text }) {
 }
 
 function FormattedSummary({ text }) {
-  const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
 
   const data = {
     "Main Topics": [],
     "Decisions": [],
-    "Action Items": []
+    "Action Items": [],
+    "Notes / Context": []
   };
 
   let current = null;
@@ -155,6 +179,7 @@ function FormattedSummary({ text }) {
     if (line.startsWith("🧠")) current = "Main Topics";
     else if (line.startsWith("✅")) current = "Decisions";
     else if (line.startsWith("🛠")) current = "Action Items";
+    else if (line.startsWith("📌")) current = "Notes / Context";
     else if (line.startsWith("-") && current) {
       data[current].push(line.replace(/^-\s*/, ""));
     }

@@ -1,135 +1,183 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import hashlib
 import requests
 
-# ----------------------------
-# APP SETUP
-# ----------------------------
 app = FastAPI()
 
+# ----------------------------
+# CORS (IMPORTANT for frontend)
+# ----------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # later restrict to your vercel domain
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ----------------------------
-# CACHE (IN-MEMORY)
-# ----------------------------
-summary_cache = {}
-
-# ----------------------------
-# REQUEST MODEL
+# Request Model
 # ----------------------------
 class SummarizeRequest(BaseModel):
     chat_text: str
-    model: str = "accurate"  # "fast" or "accurate"
+    model: str = "accurate"  # fast | accurate
+    last_n: int = 100        # 50 | 100 | 300
+
 
 # ----------------------------
-# HASH FUNCTION
+# Prompt (NORMAL MODE)
 # ----------------------------
-def get_cache_key(text: str, model: str) -> str:
-    combined = f"{model}:{text}"
-    return hashlib.sha256(combined.encode("utf-8")).hexdigest()
+NORMAL_MODE_PROMPT = """
+You are summarizing an informal chat conversation between people.
+The conversation may include greetings, casual talk, mixed languages,
+emotions, arguments, suggestions, jokes, slang, and incomplete sentences.
+
+Your goal is to produce a helpful, human-readable summary that explains:
+- what the conversation was about
+- what conclusions were reached (if any)
+- what the likely next steps are
+
+The chat provided may be a recent excerpt from a much longer conversation.
+Only the most recent messages are included.
+Do not assume missing context from earlier parts of the chat.
+
+GENERAL RULES:
+- Do NOT invent facts that are not clearly supported by the chat.
+- Do NOT assume knowledge from outside the provided messages.
+- Do NOT include emails, passwords, phone numbers, or other sensitive data.
+- Do NOT quote timestamps unless they are essential.
+- Keep the tone neutral and practical.
+- It is acceptable to infer reasonable next steps ONLY if strongly implied.
+- When context is missing, prefer uncertainty over specificity.
+
+IMPORTANT AMBIGUITY RULE:
+- If an action refers to vague terms like "it", "that", "this",
+  and the object is not clearly defined in the chat,
+  do NOT guess it. Keep it abstract or mark as unclear.
+
+SECTION RULES:
+
+1. Main Topics:
+   - List 3–6 high-level themes.
+
+2. Decisions:
+   - Include explicit decisions or conclusions.
+   - If none, write exactly: "None".
+
+3. Action Items:
+   - Include explicit tasks and strongly implied next steps.
+   - Do NOT assign ownership unless clearly stated.
+   - Do NOT invent tasks based on assumptions.
+   - Do NOT include explanations or uncertainty notes in Action Items.
+
+4. Notes / Context:
+   - Capture missing background, unclear references, or dependencies here.
+
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
+
+🧠 Main Topics
+- ...
+
+✅ Decisions
+- ...
+
+🛠 Action Items
+- ...
+
+📌 Notes / Context
+- ...
+
+Chat:
+<<<
+{chat_text}
+>>>
+""".strip()
+
 
 # ----------------------------
-# MODEL MAP
+# Helper: last N lines filter
 # ----------------------------
-MODEL_MAP = {
-    "fast": "phi3",
-    "accurate": "mistral"
-}
+def get_last_n_lines(chat_text: str, n: int) -> str:
+    lines = [l for l in chat_text.splitlines() if l.strip()]
+    if n <= 0:
+        return "\n".join(lines)
+    if len(lines) <= n:
+        return "\n".join(lines)
+    return "\n".join(lines[-n:])
+
 
 # ----------------------------
-# ENDPOINT
+# Ollama call (FAST + LIMITED)
+# ----------------------------
+def call_ollama(model_name: str, prompt: str, max_tokens: int, temperature: float) -> str:
+    url = "http://127.0.0.1:11434/api/generate"
+
+    payload = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "num_predict": max_tokens,     # LIMIT OUTPUT LENGTH = HUGE SPEED BOOST
+            "temperature": temperature     # LOWER = more direct, less rambling
+        }
+    }
+
+    r = requests.post(url, json=payload, timeout=120)
+
+    # debug if something fails
+    if r.status_code != 200:
+        print("❌ Ollama status:", r.status_code)
+        print("❌ Ollama response:", r.text)
+        r.raise_for_status()
+
+    data = r.json()
+    return data.get("response", "").strip()
+
+
+# ----------------------------
+# Route
 # ----------------------------
 @app.post("/summarize")
 def summarize(req: SummarizeRequest):
-    chat_text = req.chat_text.strip()
-    model_choice = req.model.lower()
-
-    if not chat_text:
-        return {"summary": "", "cached": False}
-
-    if model_choice not in MODEL_MAP:
-        model_choice = "accurate"
-
-    ollama_model = MODEL_MAP[model_choice]
-
-    cache_key = get_cache_key(chat_text, model_choice)
-
-    # CACHE HIT
-    if cache_key in summary_cache:
-        print(f"⚡ Cache hit ({model_choice})")
-        return {
-            "summary": summary_cache[cache_key],
-            "cached": True
-        }
-
-    print(f"🧠 Cache miss → model={ollama_model}")
-
-    prompt = f"""
-You must summarize the chat using EXACTLY this format.
-
-Rules:
-- Use bullet points starting with "-"
-- Do NOT write paragraphs
-- Do NOT leave sections empty
-- If nothing exists, write "- None"
-
-FORMAT (STRICT):
-
-🧠 Main Topics
-- item 1
-- item 2
-
-✅ Decisions
-- item 1
-- item 2
-
-🛠 Action Items
-- item 1
-- item 2
-
-Chat:
-{chat_text}
-"""
-
     try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={
-                "model": ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": 0.2 if model_choice == "accurate" else 0.3,
-                    "num_predict": 200 if model_choice == "fast" else 300
-                }
-            },
-            timeout=300
+        # ----------------------------
+        # MODEL SELECTION (YOUR INSTALLED MODELS)
+        # ----------------------------
+        if req.model == "fast":
+            chosen_model = "phi3:latest"
+            max_tokens = 250
+            temperature = 0.3
+        else:
+            chosen_model = "mistral:latest"
+            max_tokens = 350
+            temperature = 0.2
+
+            # 🔥 SPEED FIX: cap last_n in accurate mode
+            if req.last_n > 120:
+                req.last_n = 120
+
+        # ----------------------------
+        # Filter chat to recent part
+        # ----------------------------
+        filtered_chat = get_last_n_lines(req.chat_text, req.last_n)
+
+        # ----------------------------
+        # Build final prompt
+        # ----------------------------
+        final_prompt = NORMAL_MODE_PROMPT.format(chat_text=filtered_chat)
+
+        print(f"🧠 Summarizing using model={chosen_model} | last_n={req.last_n} | max_tokens={max_tokens}")
+
+        summary = call_ollama(
+            model_name=chosen_model,
+            prompt=final_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature
         )
 
-        response.raise_for_status()
-        result = response.json().get("response", "").strip()
-
-        if not result:
-            raise Exception("Empty LLM response")
-
-        summary_cache[cache_key] = result
-
-        return {
-            "summary": result,
-            "cached": False
-        }
+        return {"summary": summary}
 
     except Exception as e:
-        print("❌ ERROR:", e)
-        return {
-            "summary": "🧠 Main Topics\n- None\n\n✅ Decisions\n- None\n\n🛠 Action Items\n- None",
-            "cached": False
-        }
+        print("❌ ERROR:", str(e))
+        return {"summary": "❌ Error: Could not generate summary."}
