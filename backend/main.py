@@ -45,11 +45,40 @@ def clean_chat(chat_text: str) -> str:
     return chat_text.strip()
 
 def keep_last_n_messages(chat_text: str, last_n: int) -> str:
+    """
+    Keep last N WhatsApp-style messages (NOT last N lines).
+    A new message usually starts like:
+    [18:45, 02/01/2026] Name: message
+    """
     if last_n <= 0:
         return chat_text
 
-    lines = [l for l in chat_text.splitlines() if l.strip()]
-    return "\n".join(lines[-last_n:])
+    lines = chat_text.splitlines()
+
+    # pattern: [time, date] Name:
+    msg_start = re.compile(r"^\[\d{1,2}:\d{2},\s\d{2}/\d{2}/\d{4}\]\s.+?:\s")
+
+    messages = []
+    current = []
+
+    for line in lines:
+        if msg_start.match(line.strip()):
+            # save previous message
+            if current:
+                messages.append("\n".join(current).strip())
+                current = []
+        current.append(line)
+
+    # last message
+    if current:
+        messages.append("\n".join(current).strip())
+
+    # If parsing fails, fallback to original
+    if len(messages) == 0:
+        return chat_text
+
+    return "\n".join(messages[-last_n:])
+
 
 def ollama_generate(model_name: str, prompt: str, max_tokens: int = 250) -> str:
     payload = {
