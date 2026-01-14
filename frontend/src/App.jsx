@@ -17,8 +17,8 @@ function App() {
   const [askLoading, setAskLoading] = useState(false);
   const [answer, setAnswer] = useState("");
 
-  // 🔥 CHANGE THIS when using ngrok / deployed backend
-  const API_BASE = "http://127.0.0.1:8000";
+  // ✅ NGROK BACKEND URL (so it works on phone also)
+  const API_BASE = "https://ungovernable-noncohesively-maryln.ngrok-free.dev";
 
   const canSummarize = useMemo(() => chat.trim().length > 0 && !loading, [chat, loading]);
   const canAsk = useMemo(() => summary.trim().length > 0 && question.trim().length > 0 && !askLoading, [
@@ -277,9 +277,7 @@ function App() {
           </header>
 
           <div className="output">
-            {!summary && !loading && (
-              <div className="placeholder">Your summary will appear here.</div>
-            )}
+            {!summary && !loading && <div className="placeholder">Your summary will appear here.</div>}
             {loading && <div className="placeholder">Thinking…</div>}
             {summary && <pre className="raw-output">{summary}</pre>}
           </div>
@@ -306,9 +304,7 @@ function App() {
             </div>
 
             <div className="output" style={{ marginTop: "10px", minHeight: "120px" }}>
-              {!answer && !askLoading && (
-                <div className="placeholder">Answer will appear here.</div>
-              )}
+              {!answer && !askLoading && <div className="placeholder">Answer will appear here.</div>}
               {askLoading && <div className="placeholder">Thinking…</div>}
               {answer && <pre className="raw-output">{answer}</pre>}
             </div>
