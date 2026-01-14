@@ -5,54 +5,50 @@ function App() {
   const [chat, setChat] = useState("");
   const [summary, setSummary] = useState("");
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
 
-  const [model, setModel] = useState("accurate"); // fast | accurate
+  const [model, setModel] = useState("accurate");
 
-  // user can type last N
   const [lastN, setLastN] = useState(100);
-
-  // ✅ NEW: summarize mode
-  // "all" => summarize everything pasted
-  // "lastn" => summarize last N messages/lines
   const [summarizeMode, setSummarizeMode] = useState("lastn");
 
-  // safety limits
+  // Ask My Chat
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState("");
+  const [asking, setAsking] = useState(false);
+
   const MIN_N = 10;
   const MAX_N = 500;
+
+  const BACKEND_BASE = "http://127.0.0.1:8000"; // change to ngrok when needed
+
+  function getFinalLastN() {
+    let safeN = Number(lastN);
+    if (isNaN(safeN)) safeN = 100;
+    if (safeN < MIN_N) safeN = MIN_N;
+    if (safeN > MAX_N) safeN = MAX_N;
+    return summarizeMode === "all" ? 0 : safeN;
+  }
 
   async function summarizeChat() {
     if (!chat.trim()) return;
 
     setLoading(true);
     setSummary("");
-    setCopied(false);
+    setAnswer("");
+    setQuestion("");
 
     try {
-      // ⚠️ change to ngrok when needed
-      const BACKEND_URL = "http://127.0.0.1:8000/summarize";
-
-      let safeN = Number(lastN);
-      if (isNaN(safeN)) safeN = 100;
-      if (safeN < MIN_N) safeN = MIN_N;
-      if (safeN > MAX_N) safeN = MAX_N;
-
-      // ✅ if summarizeMode=all, we send last_n = 0
-      // backend interprets 0 as "do not trim"
-      const finalLastN = summarizeMode === "all" ? 0 : safeN;
-
-      const res = await fetch(BACKEND_URL, {
+      const res = await fetch(`${BACKEND_BASE}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           chat_text: chat,
           model: model,
-          last_n: finalLastN
+          last_n: getFinalLastN()
         })
       });
 
       if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
-
       const data = await res.json();
       setSummary(data.summary || "");
     } catch (e) {
@@ -63,28 +59,37 @@ function App() {
     }
   }
 
-  function copySummary() {
-    if (!summary) return;
-    navigator.clipboard.writeText(summary);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
-  }
+  async function askMyChat() {
+    if (!chat.trim()) {
+      setAnswer("Please paste chat first.");
+      return;
+    }
+    if (!question.trim()) return;
 
-  function downloadSummary() {
-    if (!summary) return;
-    const blob = new Blob([summary], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "chat-summary.txt";
-    a.click();
-    URL.revokeObjectURL(url);
-  }
+    setAsking(true);
+    setAnswer("");
 
-  function clearAll() {
-    setChat("");
-    setSummary("");
-    setCopied(false);
+    try {
+      const res = await fetch(`${BACKEND_BASE}/ask`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_text: chat,
+          question: question,
+          model: model,
+          last_n: getFinalLastN()
+        })
+      });
+
+      if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
+      const data = await res.json();
+      setAnswer(data.answer || "");
+    } catch (e) {
+      console.error(e);
+      setAnswer("❌ Error: Could not answer question.");
+    } finally {
+      setAsking(false);
+    }
   }
 
   return (
@@ -96,7 +101,6 @@ function App() {
             <span>Chat Input</span>
 
             <div className="header-controls">
-              {/* MODEL SELECT */}
               <select value={model} onChange={(e) => setModel(e.target.value)}>
                 <option value="fast">⚡ Fast</option>
                 <option value="accurate">🧠 Accurate</option>
@@ -104,7 +108,6 @@ function App() {
             </div>
           </header>
 
-          {/* ✅ NEW: Summarize Mode Switch */}
           <div className="mode-row">
             <div className="mode-tabs">
               <button
@@ -124,7 +127,6 @@ function App() {
               </button>
             </div>
 
-            {/* show lastN input only in recent mode */}
             {summarizeMode === "lastn" && (
               <div className="lastn-wrap">
                 <span className="lastn-label">Last</span>
@@ -141,107 +143,58 @@ function App() {
             )}
           </div>
 
-          <p className="hint">
-            {summarizeMode === "all"
-              ? "🖥️ PC tip: If you pasted only unread messages, use All Pasted."
-              : "📱 Mobile tip: If you exported a huge chat, Recent mode summarizes only the latest messages (like unread)."}
-          </p>
-
           <textarea
             className="textarea"
             value={chat}
             onChange={(e) => setChat(e.target.value)}
             placeholder="Paste chat messages here…"
-            disabled={loading}
+            disabled={loading || asking}
           />
 
           <footer className="panel-footer">
-            <button className="secondary-btn" onClick={clearAll} disabled={loading && !chat}>
-              Clear
-            </button>
-
-            <button className="primary-btn" onClick={summarizeChat} disabled={loading}>
+            <button className="primary-btn" onClick={summarizeChat} disabled={loading || asking}>
               {loading ? "Summarizing…" : "Summarize"}
             </button>
           </footer>
         </section>
 
-        {/* SUMMARY PANEL */}
+        {/* OUTPUT PANEL */}
         <section className="panel">
           <header className="panel-header row">
             <span>Summary</span>
-            <div className="actions">
-              <button onClick={copySummary} disabled={!summary}>
-                {copied ? "Copied ✓" : "Copy"}
-              </button>
-              <button onClick={downloadSummary} disabled={!summary}>
-                Download
-              </button>
-            </div>
           </header>
 
           <div className="output">
-            {!summary && !loading && (
-              <div className="placeholder">Summary will appear here</div>
-            )}
+            {!summary && !loading && <div className="placeholder">Summary will appear here</div>}
             {loading && <div className="placeholder">Thinking…</div>}
-            {summary && <SafeSummaryRenderer text={summary} />}
+            {summary && <pre className="raw-output">{summary}</pre>}
+          </div>
+
+          {/* ASK MY CHAT */}
+          <div className="ask-box">
+            <div className="ask-title">💬 Ask My Chat</div>
+
+            <input
+              className="ask-input"
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder='Ask something like: "What was decided?"'
+              disabled={asking || loading}
+            />
+
+            <button className="ask-btn" onClick={askMyChat} disabled={asking || loading}>
+              {asking ? "Asking…" : "Ask"}
+            </button>
+
+            {answer && (
+              <div className="ask-answer">
+                <div className="ask-answer-title">Answer</div>
+                <div className="ask-answer-text">{answer}</div>
+              </div>
+            )}
           </div>
         </section>
       </div>
-    </div>
-  );
-}
-
-/* ---------- SAFE RENDERERS ---------- */
-
-function SafeSummaryRenderer({ text }) {
-  const structured =
-    text.includes("🧠") || text.includes("✅") || text.includes("🛠") || text.includes("📌");
-
-  if (!structured) {
-    return <pre className="raw-output">{text}</pre>;
-  }
-
-  return <FormattedSummary text={text} />;
-}
-
-function FormattedSummary({ text }) {
-  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  const data = {
-    "Main Topics": [],
-    "Decisions": [],
-    "Action Items": [],
-    "Notes / Context": []
-  };
-
-  let current = null;
-
-  for (const line of lines) {
-    if (line.startsWith("🧠")) current = "Main Topics";
-    else if (line.startsWith("✅")) current = "Decisions";
-    else if (line.startsWith("🛠")) current = "Action Items";
-    else if (line.startsWith("📌")) current = "Notes / Context";
-    else if (line.startsWith("-") && current) {
-      data[current].push(line.replace(/^-\s*/, ""));
-    }
-  }
-
-  return (
-    <div>
-      {Object.entries(data).map(([title, items]) => (
-        <div key={title} className="section">
-          <div className="section-title">{title}</div>
-          {items.length === 0 ? (
-            <div className="bullet">• None</div>
-          ) : (
-            items.map((item, i) => (
-              <div key={i} className="bullet">• {item}</div>
-            ))
-          )}
-        </div>
-      ))}
     </div>
   );
 }

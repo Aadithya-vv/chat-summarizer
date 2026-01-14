@@ -252,3 +252,60 @@ select {
     align-items: flex-start;
   }
 }
+.ask-box {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ask-title {
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.ask-input {
+  width: 100%;
+  border-radius: 12px;
+  padding: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: #e5e7eb;
+  outline: none;
+  margin-bottom: 10px;
+}
+
+.ask-btn {
+  width: 100%;
+  background: rgba(37, 99, 235, 0.85);
+  border: none;
+  color: white;
+  padding: 10px;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ask-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ask-answer {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+}
+
+.ask-answer-title {
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+
+.ask-answer-text {
+  color: rgba(229, 231, 235, 0.9);
+  line-height: 1.4;
+}
