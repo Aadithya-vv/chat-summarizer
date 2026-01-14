@@ -1,4 +1,3 @@
-/* PAGE BASE */
 .page {
   min-height: 100vh;
   background: #0b0f19;
@@ -15,7 +14,6 @@
   gap: 14px;
 }
 
-/* PANELS */
 .panel {
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -42,6 +40,7 @@
 .header-controls {
   display: flex;
   gap: 8px;
+  align-items: center;
 }
 
 select {
@@ -54,13 +53,75 @@ select {
   cursor: pointer;
 }
 
+/* ✅ Mode Row */
+.mode-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.mode-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tab {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(229, 231, 235, 0.85);
+  border-radius: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.tab.active {
+  background: rgba(37, 99, 235, 0.35);
+  border: 1px solid rgba(37, 99, 235, 0.6);
+  color: #e5e7eb;
+}
+
+/* Last N input */
+.lastn-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 4px 8px;
+}
+
+.lastn-label {
+  font-size: 13px;
+  color: rgba(229, 231, 235, 0.8);
+}
+
+.lastn-input {
+  width: 70px;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e5e7eb;
+  font-weight: 700;
+  text-align: center;
+}
+
+.lastn-input::-webkit-outer-spin-button,
+.lastn-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
 .hint {
   margin: 0 0 10px 0;
   font-size: 13px;
   color: rgba(229, 231, 235, 0.75);
 }
 
-/* TEXTAREA */
 .textarea {
   width: 100%;
   flex: 1;
@@ -79,7 +140,6 @@ select {
   color: rgba(229, 231, 235, 0.45);
 }
 
-/* FOOTER */
 .panel-footer {
   display: flex;
   justify-content: space-between;
@@ -115,7 +175,6 @@ select {
   cursor: not-allowed;
 }
 
-/* SUMMARY OUTPUT */
 .output {
   flex: 1;
   border-radius: 14px;
@@ -131,7 +190,6 @@ select {
   font-size: 14px;
 }
 
-/* ACTION BUTTONS */
 .actions {
   display: flex;
   gap: 8px;
@@ -152,7 +210,6 @@ select {
   cursor: not-allowed;
 }
 
-/* SECTIONS */
 .section {
   margin-bottom: 14px;
 }
@@ -177,7 +234,6 @@ select {
   color: rgba(229, 231, 235, 0.92);
 }
 
-/* MOBILE RESPONSIVE */
 @media (max-width: 900px) {
   .container {
     grid-template-columns: 1fr;
@@ -189,5 +245,10 @@ select {
 
   .secondary-btn {
     width: 40%;
+  }
+
+  .mode-row {
+    flex-direction: column;
+    align-items: flex-start;
   }
 }

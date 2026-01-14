@@ -8,7 +8,18 @@ function App() {
   const [copied, setCopied] = useState(false);
 
   const [model, setModel] = useState("accurate"); // fast | accurate
-  const [lastN, setLastN] = useState(100); // 50 | 100 | 300
+
+  // user can type last N
+  const [lastN, setLastN] = useState(100);
+
+  // ✅ NEW: summarize mode
+  // "all" => summarize everything pasted
+  // "lastn" => summarize last N messages/lines
+  const [summarizeMode, setSummarizeMode] = useState("lastn");
+
+  // safety limits
+  const MIN_N = 10;
+  const MAX_N = 500;
 
   async function summarizeChat() {
     if (!chat.trim()) return;
@@ -18,9 +29,17 @@ function App() {
     setCopied(false);
 
     try {
-      // ⚠️ IMPORTANT:
-      // Replace this with your real backend URL (ngrok / render / railway)
-      const BACKEND_URL = " https://ungovernable-noncohesively-maryln.ngrok-free.dev/summarize";
+      // ⚠️ change to ngrok when needed
+      const BACKEND_URL = "http://127.0.0.1:8000/summarize";
+
+      let safeN = Number(lastN);
+      if (isNaN(safeN)) safeN = 100;
+      if (safeN < MIN_N) safeN = MIN_N;
+      if (safeN > MAX_N) safeN = MAX_N;
+
+      // ✅ if summarizeMode=all, we send last_n = 0
+      // backend interprets 0 as "do not trim"
+      const finalLastN = summarizeMode === "all" ? 0 : safeN;
 
       const res = await fetch(BACKEND_URL, {
         method: "POST",
@@ -28,13 +47,11 @@ function App() {
         body: JSON.stringify({
           chat_text: chat,
           model: model,
-          last_n: lastN
+          last_n: finalLastN
         })
       });
 
-      if (!res.ok) {
-        throw new Error(`HTTP error: ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
 
       const data = await res.json();
       setSummary(data.summary || "");
@@ -80,35 +97,61 @@ function App() {
 
             <div className="header-controls">
               {/* MODEL SELECT */}
-              <select
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-              >
+              <select value={model} onChange={(e) => setModel(e.target.value)}>
                 <option value="fast">⚡ Fast</option>
                 <option value="accurate">🧠 Accurate</option>
-              </select>
-
-              {/* LAST N SELECT */}
-              <select
-                value={lastN}
-                onChange={(e) => setLastN(Number(e.target.value))}
-              >
-                <option value={50}>Last 50 msgs</option>
-                <option value={100}>Last 100 msgs</option>
-                <option value={300}>Last 300 msgs</option>
               </select>
             </div>
           </header>
 
+          {/* ✅ NEW: Summarize Mode Switch */}
+          <div className="mode-row">
+            <div className="mode-tabs">
+              <button
+                className={summarizeMode === "lastn" ? "tab active" : "tab"}
+                onClick={() => setSummarizeMode("lastn")}
+                type="button"
+              >
+                Recent
+              </button>
+
+              <button
+                className={summarizeMode === "all" ? "tab active" : "tab"}
+                onClick={() => setSummarizeMode("all")}
+                type="button"
+              >
+                All Pasted
+              </button>
+            </div>
+
+            {/* show lastN input only in recent mode */}
+            {summarizeMode === "lastn" && (
+              <div className="lastn-wrap">
+                <span className="lastn-label">Last</span>
+                <input
+                  className="lastn-input"
+                  type="number"
+                  value={lastN}
+                  min={MIN_N}
+                  max={MAX_N}
+                  onChange={(e) => setLastN(e.target.value)}
+                />
+                <span className="lastn-label">msgs</span>
+              </div>
+            )}
+          </div>
+
           <p className="hint">
-            📱 Mobile tip: If you export a huge chat, this app summarizes only the most recent messages (like unread).
+            {summarizeMode === "all"
+              ? "🖥️ PC tip: If you pasted only unread messages, use All Pasted."
+              : "📱 Mobile tip: If you exported a huge chat, Recent mode summarizes only the latest messages (like unread)."}
           </p>
 
           <textarea
             className="textarea"
             value={chat}
             onChange={(e) => setChat(e.target.value)}
-            placeholder="Paste unread / recent chat messages here…"
+            placeholder="Paste chat messages here…"
             disabled={loading}
           />
 
