@@ -17,15 +17,24 @@ function App() {
   const [askLoading, setAskLoading] = useState(false);
   const [answer, setAnswer] = useState("");
 
+  // Analytics feature
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [analytics, setAnalytics] = useState(null);
+
   // ✅ NGROK BACKEND URL (so it works on phone also)
   const API_BASE = "https://ungovernable-noncohesively-maryln.ngrok-free.dev";
 
   const canSummarize = useMemo(() => chat.trim().length > 0 && !loading, [chat, loading]);
-  const canAsk = useMemo(() => summary.trim().length > 0 && question.trim().length > 0 && !askLoading, [
-    summary,
-    question,
-    askLoading
-  ]);
+
+  const canAsk = useMemo(
+    () => summary.trim().length > 0 && question.trim().length > 0 && !askLoading,
+    [summary, question, askLoading]
+  );
+
+  const canAnalyze = useMemo(
+    () => chat.trim().length > 0 && !analyticsLoading,
+    [chat, analyticsLoading]
+  );
 
   async function summarizeChat() {
     if (!chat.trim()) return;
@@ -107,6 +116,43 @@ function App() {
     }
   }
 
+  async function analyzeChat() {
+    if (!chat.trim()) return;
+
+    setAnalyticsLoading(true);
+    setStatusMsg("");
+    setAnalytics(null);
+
+    try {
+      const payload = {
+        chat_text: chat,
+        last_n: 0 // analyze full chat box by default
+      };
+
+      const res = await fetch(`${API_BASE}/analytics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        setAnalytics(null);
+        setStatusMsg(data?.detail || "Error generating analytics.");
+        return;
+      }
+
+      setAnalytics(data);
+    } catch (e) {
+      console.error(e);
+      setAnalytics(null);
+      setStatusMsg("Error generating analytics.");
+    } finally {
+      setAnalyticsLoading(false);
+    }
+  }
+
   function copySummary() {
     if (!summary) return;
     navigator.clipboard.writeText(summary);
@@ -135,6 +181,7 @@ function App() {
     setCopied(false);
     setAnswer("");
     setQuestion("");
+    setAnalytics(null);
 
     try {
       setStatusMsg("📦 Reading ZIP...");
@@ -211,7 +258,7 @@ function App() {
                 className="select"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                disabled={loading || askLoading}
+                disabled={loading || askLoading || analyticsLoading}
               >
                 <option value="fast">⚡ Fast</option>
                 <option value="accurate">🧠 Accurate</option>
@@ -224,7 +271,7 @@ function App() {
                 placeholder="Last N (0 = all)"
                 value={lastN}
                 onChange={(e) => setLastN(e.target.value)}
-                disabled={loading || askLoading}
+                disabled={loading || askLoading || analyticsLoading}
               />
             </div>
           </header>
@@ -234,12 +281,16 @@ function App() {
             value={chat}
             onChange={(e) => setChat(e.target.value)}
             placeholder="Paste unread chat messages here…"
-            disabled={loading || askLoading}
+            disabled={loading || askLoading || analyticsLoading}
           />
 
           <footer className="panel-footer">
             <button className="primary-btn" onClick={summarizeChat} disabled={!canSummarize}>
               {loading ? "Summarizing…" : "Summarize"}
+            </button>
+
+            <button className="secondary-btn" onClick={analyzeChat} disabled={!canAnalyze}>
+              {analyticsLoading ? "Analyzing…" : "Analyze"}
             </button>
 
             <button
@@ -251,8 +302,9 @@ function App() {
                 setCopied(false);
                 setQuestion("");
                 setAnswer("");
+                setAnalytics(null);
               }}
-              disabled={loading || askLoading}
+              disabled={loading || askLoading || analyticsLoading}
             >
               Clear
             </button>
@@ -261,7 +313,7 @@ function App() {
           {statusMsg && <div className="status">{statusMsg}</div>}
         </section>
 
-        {/* SUMMARY + ASK PANEL */}
+        {/* SUMMARY + ASK + ANALYTICS PANEL */}
         <section className="panel">
           <header className="panel-header">
             <div className="panel-title">Summary</div>
@@ -294,7 +346,7 @@ function App() {
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder='Example: "Why did he say uninstall it?"'
-              disabled={!summary || loading || askLoading}
+              disabled={!summary || loading || askLoading || analyticsLoading}
             />
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
@@ -308,6 +360,79 @@ function App() {
               {askLoading && <div className="placeholder">Thinking…</div>}
               {answer && <pre className="raw-output">{answer}</pre>}
             </div>
+          </div>
+
+          {/* ANALYTICS */}
+          <div style={{ marginTop: "12px" }}>
+            <div style={{ fontWeight: 700, fontSize: "13px", marginBottom: "8px", opacity: 0.9 }}>
+              Analytics
+            </div>
+
+            {!analytics && !analyticsLoading && (
+              <div className="placeholder">Click "Analyze" to see chat statistics.</div>
+            )}
+
+            {analyticsLoading && <div className="placeholder">Crunching numbers…</div>}
+
+            {analytics && (
+              <div className="output" style={{ marginTop: "10px", minHeight: "180px" }}>
+                <div style={{ fontSize: "13px", lineHeight: "1.6" }}>
+                  <div><b>Total Messages:</b> {analytics.total_messages}</div>
+                  <div><b>Most Active Day:</b> {analytics.most_active_day || "N/A"}</div>
+                  <div><b>Most Active Hour:</b> {analytics.most_active_hour || "N/A"}</div>
+
+                  <div style={{ marginTop: "12px" }}>
+                    <b>Messages per User:</b>
+                    <ul style={{ margin: "6px 0 0 18px" }}>
+                      {Object.entries(analytics.messages_per_user || {}).map(([user, count]) => (
+                        <li key={user}>{user}: {count}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  <div style={{ marginTop: "12px" }}>
+                    <b>Top 20 Words:</b>
+                    <div style={{ marginTop: "6px", display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                      {(analytics.top_words || []).map((w) => (
+                        <span
+                          key={w.word}
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: "999px",
+                            background: "rgba(255,255,255,0.06)",
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            fontSize: "12px"
+                          }}
+                        >
+                          {w.word} ({w.count})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div style={{ marginTop: "12px" }}>
+                    <b>Top Emojis:</b>
+                    <div style={{ marginTop: "6px", display: "flex", flexWrap: "wrap", gap: "10px" }}>
+                      {(analytics.top_emojis || []).map((e) => (
+                        <span
+                          key={e.emoji}
+                          style={{
+                            padding: "6px 10px",
+                            borderRadius: "12px",
+                            background: "rgba(255,255,255,0.06)",
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            fontSize: "14px"
+                          }}
+                        >
+                          {e.emoji} <span style={{ opacity: 0.7, fontSize: "12px" }}>({e.count})</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                </div>
+              </div>
+            )}
           </div>
         </section>
       </div>
