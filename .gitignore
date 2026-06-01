@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 venv/
+.venv/
 
 # Node
 node_modules/
@@ -11,3 +12,6 @@ dist/
 
 # OS
 .DS_Store
+
+# Logs
+*.log

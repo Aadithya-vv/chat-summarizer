@@ -1,446 +1,502 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
+import os
+
+os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
+
+import warnings
 import requests
 import re
 from collections import Counter
-from datetime import datetime
+import numpy as np
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+warnings.filterwarnings(
+    "ignore",
+    message="Could not find the number of physical cores.*",
+    category=UserWarning,
+)
 
 app = FastAPI()
 
-# ✅ CORS MUST be added right after app creation
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # you can restrict later
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# ✅ Fix preflight OPTIONS requests (important for browsers)
-@app.options("/{rest_of_path:path}")
-async def preflight_handler(rest_of_path: str):
-    return {}
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
 
-# -----------------------------
-# Request Models
-# -----------------------------
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
+
+
 class SummarizeRequest(BaseModel):
     chat_text: str
-    model: str = "accurate"   # fast | accurate
-    last_n: int = 0           # 0 = all
+    model: str = "accurate"
+    last_n: int = 0
+    mode: str = "normal"
+    evidence: bool = True
+
 
 class AskRequest(BaseModel):
     chat_text: str
-    summary: str = ""
     question: str
-    model: str = "accurate"   # fast | accurate
+    summary: str = ""
+    model: str = "accurate"
+
 
 class AnalyticsRequest(BaseModel):
     chat_text: str
     last_n: int = 0
 
-# -----------------------------
-# Ollama Settings
-# -----------------------------
-OLLAMA_URL = "http://localhost:11434/api/generate"
 
-MODEL_MAP = {
-    "fast": "phi3:latest",
-    "accurate": "mistral:latest"
+class TopicsRequest(BaseModel):
+    chat_text: str
+    max_topics: int = 6
+    last_n: int = 0
+    chunk_size: int = 200
+    sample_per_topic: int = 3
+    model: str = "fast"
+
+
+TOPIC_STOPWORDS = {
+    "aadithya", "aadhitya", "anagha", "arun", "arunprabhu", "arunprabuuuuuu",
+    "arif", "durka", "mahalakshmi", "manjula", "sasikala", "vinothkumar",
+    "sir", "mam", "maam", "msec", "ece", "dear", "students", "everyone",
+    "thank", "thanks", "thankyou", "congrats", "congratulations", "super",
+    "ok", "okay", "yes", "no", "pls", "please", "bro", "dude", "mam",
+    "dont", "don", "afterwards", "yr", "year",
+    "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
+    "nov", "dec", "am", "pm", "lic",
 }
 
-# -----------------------------
-# Stopwords (basic)
-# -----------------------------
-STOPWORDS = set("""
-a an the and or but if then else so because as at by for from in into on onto out over under to of
-is am are was were be been being do does did doing have has had having
-i me my mine we us our ours you your yours he him his she her hers they them their theirs
-this that these those it its it's im i'm u ur ya bro dude man
-ok okay hmm lol lmao bruh
-""".split())
+COMMON_TOPIC_WORDS = {
+    "and", "are", "for", "from", "has", "have", "her", "him", "his", "its",
+    "more", "our", "the", "their", "them", "this", "that", "was", "were",
+    "with", "you", "your", "they", "will", "should",
+}
 
-# Extra junk words we never want in top words
-JUNK_WORDS = set("""
-am pm a.m p.m
-jan january feb february mar march apr april may jun june jul july aug august sep september oct october nov november dec december
-""".split())
+FILLER_PATTERNS = [
+    r"^thank\s+you\s+(sir|mam|maam)?\.?$",
+    r"^thanks\s+(sir|mam|maam)?\.?$",
+    r"^super\s+my\s+dears?\.?$",
+    r"^ok(ay)?\.?$",
+    r"^do?n'?t ask me afterwards\.?$",
+]
 
-# -----------------------------
-# Helpers
-# -----------------------------
-def clean_chat(chat_text: str) -> str:
-    chat_text = chat_text.strip()
-    chat_text = re.sub(r"Messages and calls are end-to-end encrypted.*", "", chat_text, flags=re.IGNORECASE)
-    return chat_text.strip()
 
-def ollama_generate(model_name: str, prompt: str, max_tokens: int = 250) -> str:
-    payload = {
-        "model": model_name,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "num_predict": max_tokens,
-            "temperature": 0.3
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODELS = {
+    "accurate": ["mistral:latest", "phi3:latest"],
+    "fast": ["phi3:latest", "mistral:latest"],
+}
+
+
+def ollama_generate(prompt, max_tokens=200, mode="accurate"):
+    models = OLLAMA_MODELS.get(mode, OLLAMA_MODELS["accurate"])
+
+    for model in models:
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.1,
+                "num_predict": max_tokens,
+                "top_p": 0.9,
+            },
         }
-    }
 
-    r = requests.post(OLLAMA_URL, json=payload, timeout=120)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("response", "").strip()
+        try:
+            r = requests.post(OLLAMA_URL, json=payload, timeout=120)
+            if not r.ok:
+                continue
 
-# WhatsApp formats
-PATTERN_BRACKET = re.compile(
-    r"^\[(\d{1,2}:\d{2}),\s(\d{2}/\d{2}/\d{4})\]\s(.+?):\s(.*)$"
-)
-PATTERN_DASH = re.compile(
-    r"^(\d{1,2}/\d{1,2}/\d{2,4}),\s(\d{1,2}:\d{2})\s-\s(.+?):\s(.*)$"
-)
-
-def parse_whatsapp_messages(chat_text: str):
-    lines = chat_text.splitlines()
-    messages = []
-    current = None
-
-    def push_current():
-        nonlocal current
-        if current:
-            current["text"] = current["text"].strip()
-            if current["text"]:
-                messages.append(current)
-        current = None
-
-    for raw in lines:
-        line = raw.strip()
-        if not line:
+            response = r.json().get("response", "").strip()
+            if response:
+                return response
+        except requests.RequestException:
             continue
 
-        m1 = PATTERN_BRACKET.match(line)
-        m2 = PATTERN_DASH.match(line)
+    return ""
 
-        if m1:
-            push_current()
-            time_str, date_str, user, text = m1.groups()
 
-            dt = None
-            try:
-                dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
-            except:
-                dt = None
+def clean_chat(chat):
+    return chat.strip()
 
-            current = {
-                "datetime": dt,
-                "date_str": date_str,
-                "time_str": time_str,
-                "user": user.strip(),
-                "text": text.strip()
-            }
 
-        elif m2:
-            push_current()
-            date_str, time_str, user, text = m2.groups()
+def select_last_messages(chat, last_n):
+    lines = [line for line in chat.split("\n") if line.strip()]
+    if last_n and last_n > 0:
+        lines = lines[-last_n:]
+    return "\n".join(lines)
 
-            dt = None
-            try:
-                if len(date_str.split("/")[-1]) == 2:
-                    dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%y %H:%M")
-                else:
-                    dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M")
-            except:
-                dt = None
 
-            current = {
-                "datetime": dt,
-                "date_str": date_str,
-                "time_str": time_str,
-                "user": user.strip(),
-                "text": text.strip()
-            }
-
-        else:
-            if current:
-                current["text"] += "\n" + raw.strip()
-            else:
-                current = {
-                    "datetime": None,
-                    "date_str": "",
-                    "time_str": "",
-                    "user": "Unknown",
-                    "text": raw.strip()
-                }
-
-    push_current()
-    return messages
-
-def keep_last_n_messages(chat_text: str, last_n: int) -> str:
-    if last_n <= 0:
-        return chat_text
-
-    msgs = parse_whatsapp_messages(chat_text)
-    if not msgs:
-        return chat_text
-
-    last_msgs = msgs[-last_n:]
-    out = []
-    for m in last_msgs:
-        if m["date_str"] and m["time_str"]:
-            out.append(f"[{m['time_str']}, {m['date_str']}] {m['user']}: {m['text']}")
-        else:
-            out.append(f"{m['user']}: {m['text']}")
-    return "\n".join(out)
-
-def extract_emojis(text: str):
-    emoji_pattern = re.compile(
-        "[" 
-        "\U0001F300-\U0001F5FF"
-        "\U0001F600-\U0001F64F"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F700-\U0001F77F"
-        "\U0001F780-\U0001F7FF"
-        "\U0001F800-\U0001F8FF"
-        "\U0001F900-\U0001F9FF"
-        "\U0001FA00-\U0001FA6F"
-        "\U0001FA70-\U0001FAFF"
-        "\u2600-\u26FF"
-        "\u2700-\u27BF"
-        "]+",
-        flags=re.UNICODE
-    )
-    return emoji_pattern.findall(text)
-
-def tokenize_words(text: str):
+def is_noise(text):
     text = text.lower()
+    if "<media omitted>" in text:
+        return True
+    if len(text) < 4:
+        return True
+    if re.search(r"\.(jpg|png|mp4|webp|pdf)", text):
+        return True
+    return False
 
-    # remove links
-    text = re.sub(r"http\S+", "", text)
 
-    # remove timestamps like 18:45
-    text = re.sub(r"\b\d{1,2}:\d{2}\b", " ", text)
-
-    # remove dates like 02/01/2026 or 2/1/26
-    text = re.sub(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", " ", text)
-
-    # remove pure numbers
-    text = re.sub(r"\b\d+\b", " ", text)
-
-    # keep only words (letters + apostrophe)
-    tokens = re.findall(r"[a-z']+", text)
-
-    # remove stopwords + junk words + tiny tokens
-    tokens = [
-        t for t in tokens
-        if t not in STOPWORDS
-        and t not in JUNK_WORDS
-        and len(t) > 1
+def parse_chat_line(line):
+    line = line.strip()
+    patterns = [
+        r"^\[(?P<time>\d{1,2}:\d{2}),\s*(?P<date>\d{1,2}/\d{1,2}/\d{2,4})\]\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
+        r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),?\s*(?P<time>\d{1,2}:\d{2})(?:\s?[AP]M)?\s+-\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
     ]
 
-    return tokens
+    for pattern in patterns:
+        match = re.match(pattern, line)
+        if match:
+            return {
+                "raw": line,
+                "user": match.group("user").strip(),
+                "text": match.group("text").strip(),
+            }
 
-# -----------------------------
-# Routes
-# -----------------------------
+    return {"raw": line, "user": "", "text": line}
+
+
+def normalize_topic_text(text):
+    text = text.lower()
+    text = re.sub(r"<media omitted>", " ", text)
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"\b\d{1,2}[:/.-]\d{1,2}(?:[:/.-]\d{2,4})?\b", " ", text)
+    text = re.sub(r"\b\d+\b", " ", text)
+    text = re.sub(r"[^a-z\s]", " ", text)
+    words = [
+        word for word in text.split()
+        if len(word) > 2
+        and word not in TOPIC_STOPWORDS
+        and word not in COMMON_TOPIC_WORDS
+    ]
+    return " ".join(words)
+
+
+def is_filler_message(text):
+    normalized = normalize_topic_text(text)
+    lowered = re.sub(r"[^a-z\s]", " ", text.lower()).strip()
+    lowered = re.sub(r"\s+", " ", lowered)
+
+    if not normalized:
+        return True
+    if len(normalized.split()) < 2:
+        return True
+    return any(re.match(pattern, lowered) for pattern in FILLER_PATTERNS)
+
+
+def summary_instructions(mode):
+    instructions = {
+        "tldr": "Return a TLDR in exactly 2 short lines.",
+        "bullets": "Return concise bullet points only.",
+        "minutes": "Return meeting minutes with topics, decisions, and action items.",
+        "normal": "Return a clear structured summary with main topics, decisions, and action items.",
+    }
+    return instructions.get(mode, instructions["normal"])
+
+
+def simple_kmeans(vectors, k, iterations=8):
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    vectors = vectors / np.maximum(norms, 1e-9)
+    centroids = vectors[:k].copy()
+    labels = np.zeros(vectors.shape[0], dtype=int)
+
+    for _ in range(iterations):
+        distances = ((vectors[:, None, :] - centroids[None, :, :]) ** 2).sum(axis=2)
+        labels = distances.argmin(axis=1)
+
+        for cluster_id in range(k):
+            members = vectors[labels == cluster_id]
+            if len(members) > 0:
+                centroids[cluster_id] = members.mean(axis=0)
+
+    return labels
+
+
+def cosine_similarity_matrix(matrix):
+    dense = matrix.toarray()
+    norms = np.linalg.norm(dense, axis=1, keepdims=True)
+    dense = dense / np.maximum(norms, 1e-9)
+    return dense @ dense.T
+
+
+def keyword_set(text):
+    return {
+        word for word in text.split()
+        if word not in TOPIC_STOPWORDS and word not in COMMON_TOPIC_WORDS
+    }
+
+
+def group_related_messages(x_matrix, normalized_messages):
+    similarity = cosine_similarity_matrix(x_matrix)
+    keyword_sets = [keyword_set(text) for text in normalized_messages]
+    visited = set()
+    groups = []
+
+    for start in range(len(normalized_messages)):
+        if start in visited:
+            continue
+
+        stack = [start]
+        visited.add(start)
+        group = []
+
+        while stack:
+            current = stack.pop()
+            group.append(current)
+
+            for candidate in range(len(normalized_messages)):
+                if candidate in visited:
+                    continue
+
+                overlap = len(keyword_sets[current] & keyword_sets[candidate])
+                related = similarity[current, candidate] >= 0.22 or overlap >= 2
+                if related:
+                    visited.add(candidate)
+                    stack.append(candidate)
+
+        groups.append(group)
+
+    return groups
+
+
+def make_topic_summary(cluster_messages, mode):
+    if len(cluster_messages) == 1:
+        return cluster_messages[0]
+
+    prompt = f"""
+Summarize these related chat messages as one topic.
+Rules:
+- Use only the messages below.
+- One short sentence.
+- Do not add outside context.
+- Do not mention timestamps unless needed.
+
+MESSAGES:
+{chr(10).join(cluster_messages[:8])}
+
+TOPIC:
+"""
+    summary = ollama_generate(prompt, 60, mode)
+    return summary or cluster_messages[0]
+
+
 @app.get("/")
 def root():
-    return {
-        "status": "✅ Backend is running",
-        "endpoints": {
-            "docs": "/docs",
-            "summarize": "POST /summarize",
-            "ask": "POST /ask",
-            "analytics": "POST /analytics"
-        }
-    }
+    return {"status": "Backend running"}
+
 
 @app.post("/summarize")
 def summarize(req: SummarizeRequest):
-    chat_text = clean_chat(req.chat_text or "")
-    if not chat_text.strip():
-        return {"summary": ""}
-
-    model_name = MODEL_MAP.get(req.model, MODEL_MAP["accurate"])
-    chat_text = keep_last_n_messages(chat_text, req.last_n)
-
-    if len(chat_text.strip()) < 30:
-        return {"summary": "Not enough recent messages to summarize. Try a bigger number or paste more chat."}
+    chat = select_last_messages(clean_chat(req.chat_text), req.last_n)
+    evidence_rule = (
+        "Use only evidence from the chat. If something is unclear, say it is unclear."
+        if req.evidence
+        else "Summarize naturally, but do not invent facts."
+    )
 
     prompt = f"""
-You are summarizing an informal chat conversation between people.
-The conversation may include greetings, casual talk, mixed languages,
-emotions, arguments, suggestions, and incomplete sentences.
-
-Your goal is to produce a helpful, human-readable summary that explains:
-- what the conversation was about
-- what conclusions were reached (if any)
-- what the likely next steps are
-
-Follow these rules carefully:
-
-GENERAL RULES:
-- Do NOT invent facts that are not supported by the chat.
-- Do NOT include emails, passwords, phone numbers, or other sensitive data.
-- Do NOT quote timestamps unless they clearly matter.
-- Keep the tone neutral and practical.
-- It is okay to infer reasonable next steps if they are strongly implied.
-- If a detail is unclear (like "uninstall it"), do NOT assume what "it" refers to.
-
-FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
-
-🧠 Main Topics
-- ...
-
-✅ Decisions
-- ...
-
-🛠 Action Items
-- ...
-
-📌 Notes / Context
-- ...
+{summary_instructions(req.mode)}
+{evidence_rule}
 
 CHAT:
-{chat_text}
-""".strip()
+{chat}
+"""
 
     try:
-        summary = ollama_generate(model_name, prompt, max_tokens=320)
-        return {"summary": summary}
-    except Exception as e:
-        print("❌ /summarize ERROR:", repr(e))
-        return {"summary": "Error: Could not generate summary."}
+        result = ollama_generate(prompt, 250, req.model)
+        return {"summary": result}
+    except Exception:
+        return {"summary": "Error generating summary"}
+
 
 @app.post("/ask")
 def ask(req: AskRequest):
-    chat_text = clean_chat(req.chat_text or "")
-    summary = (req.summary or "").strip()
-    question = (req.question or "").strip()
-
-    if not chat_text.strip():
-        return {"answer": "Please paste the chat first."}
-
-    if not question:
-        return {"answer": "Please type a question."}
-
-    model_name = MODEL_MAP.get(req.model, MODEL_MAP["accurate"])
+    chat = clean_chat(req.chat_text)
 
     prompt = f"""
-You are an assistant helping a user understand a WhatsApp chat.
-
-Answer the user's question using ONLY what is present in the chat text.
-If the chat does NOT contain enough info, do NOT guess.
-
-Reply naturally:
-- Start with what the chat DOES show.
-- If unsure say: "From this chat alone..."
-- Keep it short (1–4 lines).
+Answer the question using ONLY the chat.
+If unclear, say: Unclear from this chat.
 
 CHAT:
-{chat_text}
+{chat}
 
-SUMMARY:
-{summary}
+QUESTION:
+{req.question}
 
-USER QUESTION:
-{question}
-
-Answer:
-""".strip()
+ANSWER:
+"""
 
     try:
-        answer = ollama_generate(model_name, prompt, max_tokens=180)
-        if not answer.strip():
-            return {"answer": "I couldn't find a clear answer in this chat. Paste a few more messages."}
-        return {"answer": answer}
-    except Exception as e:
-        print("❌ /ask ERROR:", repr(e))
-        return {"answer": "Sorry, I couldn’t answer that right now. Try again."}
+        result = ollama_generate(prompt, 150, req.model)
+        return {"answer": result}
+    except Exception:
+        return {"answer": "Error answering question"}
+
 
 @app.post("/analytics")
 def analytics(req: AnalyticsRequest):
-    chat_text = clean_chat(req.chat_text or "")
-    if not chat_text.strip():
-        return {
-            "total_messages": 0,
-            "messages_per_user": {},
-            "most_active_day": None,
-            "most_active_hour": None,
-            "top_words_mode": "repeated",
-            "top_words": [],
-            "top_emojis": []
-        }
+    chat = select_last_messages(req.chat_text, req.last_n)
+    messages = [m.strip() for m in chat.split("\n") if m.strip()]
+    total = len(messages)
 
-    messages = parse_whatsapp_messages(chat_text)
+    word_count = {}
+    messages_per_user = {}
+    day_count = {}
+    hour_count = {}
 
-    if req.last_n and req.last_n > 0 and len(messages) > req.last_n:
-        messages = messages[-req.last_n:]
+    for msg in messages:
+        match = re.match(
+            r"^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}):(\d{2})(?:\s?[AP]M)?\s+-\s+([^:]+):",
+            msg,
+        )
+        if match:
+            day = match.group(1)
+            hour = match.group(2)
+            user = match.group(4).strip()
+            day_count[day] = day_count.get(day, 0) + 1
+            hour_count[hour] = hour_count.get(hour, 0) + 1
+            messages_per_user[user] = messages_per_user.get(user, 0) + 1
 
-    total_messages = len(messages)
-
-    per_user = Counter()
-    per_day = Counter()
-    per_hour = Counter()
-    word_counter = Counter()
-    emoji_counter = Counter()
-
-    # ✅ Collect participant names to exclude them from top words
-    participants = set()
-    for m in messages:
-        if m.get("user"):
-            participants.add(m["user"].strip().lower())
-
-    participant_tokens = set()
-    for name in participants:
-        parts = re.findall(r"[a-z']+", name.lower())
-        for p in parts:
-            if len(p) > 1:
-                participant_tokens.add(p)
-
-    for m in messages:
-        user = m.get("user", "Unknown") or "Unknown"
-        text = m.get("text", "") or ""
-
-        per_user[user] += 1
-
-        dt = m.get("datetime")
-        if dt:
-            per_day[dt.strftime("%Y-%m-%d")] += 1
-            per_hour[str(dt.hour).zfill(2)] += 1
-
-        # words
-        for w in tokenize_words(text):
-            if w in participant_tokens:
+        words = re.findall(r"[a-zA-Z']+", msg.lower())
+        for word in words:
+            if len(word) < 3:
                 continue
-            word_counter[w] += 1
+            word_count[word] = word_count.get(word, 0) + 1
 
-        # emojis
-        for em in extract_emojis(text):
-            emoji_counter[em] += 1
-
-    most_active_day = per_day.most_common(1)[0][0] if per_day else None
-    most_active_hour = per_hour.most_common(1)[0][0] if per_hour else None
-
-    # ✅ 1) Try repeated words first (count >= 2)
-    repeated_words = [(w, c) for w, c in word_counter.items() if c >= 2]
-    repeated_words.sort(key=lambda x: x[1], reverse=True)
-
-    if len(repeated_words) > 0:
-        top_words_mode = "repeated"
-        top_words = [{"word": w, "count": c} for w, c in repeated_words[:10]]
-    else:
-        # ✅ 2) Fallback to normal top words (count >= 1)
-        top_words_mode = "fallback"
-        top_words = [{"word": w, "count": c} for w, c in word_counter.most_common(10)]
-
-    top_emojis = [{"emoji": e, "count": c} for e, c in emoji_counter.most_common(10)]
+    top_words = [
+        {"word": word, "count": count}
+        for word, count in sorted(word_count.items(), key=lambda x: x[1], reverse=True)[:10]
+    ]
+    most_active_day = max(day_count.items(), key=lambda x: x[1])[0] if day_count else None
+    most_active_hour = max(hour_count.items(), key=lambda x: x[1])[0] if hour_count else None
 
     return {
-        "total_messages": total_messages,
-        "messages_per_user": dict(per_user),
+        "total_messages": total,
+        "messages_per_user": messages_per_user,
         "most_active_day": most_active_day,
         "most_active_hour": most_active_hour,
-        "top_words_mode": top_words_mode,
         "top_words": top_words,
-        "top_emojis": top_emojis
+        "top_emojis": [],
     }
 
+
+@app.post("/topics")
+def topics(req: TopicsRequest):
+    chat = select_last_messages(req.chat_text, req.last_n)
+    parsed_messages = []
+
+    for line in chat.split("\n"):
+        if not line.strip() or is_noise(line):
+            continue
+
+        parsed = parse_chat_line(line)
+        if is_filler_message(parsed["text"]) and parsed_messages and not parsed["user"] and not parsed_messages[-1]["user"]:
+            parsed_messages[-1]["raw"] = f"{parsed_messages[-1]['raw']}\n{parsed['raw']}"
+            parsed_messages[-1]["text"] = f"{parsed_messages[-1]['text']} {parsed['text']}"
+            parsed_messages[-1]["normalized"] = normalize_topic_text(parsed_messages[-1]["text"])
+            continue
+
+        if is_filler_message(parsed["text"]):
+            continue
+
+        normalized = normalize_topic_text(f"{parsed['user']} {parsed['text']}")
+        if not normalized:
+            continue
+
+        if parsed_messages and not parsed["user"] and not parsed_messages[-1]["user"]:
+            parsed_messages[-1]["raw"] = f"{parsed_messages[-1]['raw']}\n{parsed['raw']}"
+            parsed_messages[-1]["text"] = f"{parsed_messages[-1]['text']} {parsed['text']}"
+            parsed_messages[-1]["normalized"] = normalize_topic_text(parsed_messages[-1]["text"])
+        else:
+            parsed_messages.append({
+                "raw": parsed["raw"],
+                "user": parsed["user"],
+                "text": parsed["text"],
+                "normalized": normalized,
+            })
+
+    if len(parsed_messages) < 2:
+        return {"topics": []}
+
+    normalized_messages = [message["normalized"] for message in parsed_messages]
+    raw_messages = [message["raw"] for message in parsed_messages]
+    topic_texts = [message["text"] for message in parsed_messages]
+
+    vectorizer = TfidfVectorizer(
+        stop_words="english",
+        max_df=0.85,
+        min_df=1,
+        ngram_range=(1, 2),
+    )
+    try:
+        x_matrix = vectorizer.fit_transform(normalized_messages)
+    except ValueError:
+        return {"topics": []}
+
+    words = vectorizer.get_feature_names_out()
+
+    topics_result = []
+    sample_count = max(1, req.sample_per_topic)
+    groups = group_related_messages(x_matrix, normalized_messages)
+    groups.sort(key=lambda group: (len(group), sum(len(raw_messages[i]) for i in group)), reverse=True)
+
+    for group in groups:
+        idx = np.array(group)
+        cluster_msgs = [raw_messages[j] for j in idx]
+        cluster_topic_texts = [topic_texts[j] for j in idx]
+        normalized_cluster = " ".join(normalized_messages[j] for j in idx)
+
+        if not cluster_msgs or len(normalized_cluster.split()) < 3:
+            continue
+
+        tfidf_sum = x_matrix[idx].sum(axis=0)
+        scores = np.asarray(tfidf_sum).flatten()
+        top_idx = scores.argsort()[::-1]
+        keywords = []
+        for word_index in top_idx:
+            if scores[word_index] <= 0:
+                break
+            keyword = words[word_index]
+            parts = keyword.split()
+            if any(part in TOPIC_STOPWORDS for part in parts):
+                continue
+            if any(part.isdigit() for part in parts):
+                continue
+            keywords.append(keyword)
+            if len(keywords) == 5:
+                break
+
+        if not keywords:
+            continue
+
+        summary = make_topic_summary(cluster_topic_texts, req.model)
+
+        topics_result.append({
+            "topic_id": len(topics_result),
+            "chunk_id": 0,
+            "keywords": keywords,
+            "sample_messages": cluster_msgs[:sample_count],
+            "topic_summary": summary,
+        })
+
+        if len(topics_result) >= req.max_topics:
+            break
+
+    return {"topics": topics_result}

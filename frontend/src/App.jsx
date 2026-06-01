@@ -1,40 +1,207 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import JSZip from "jszip";
 import "./App.css";
+
+const API_BASE = "http://127.0.0.1:8000";
+
+const TABS = [
+  { id: "summary", label: "Summary" },
+  { id: "ask", label: "Ask" },
+  { id: "analytics", label: "Analytics" },
+  { id: "topics", label: "Topics" }
+];
+
+function parseChatStats(chat) {
+  const lines = chat.split("\n").map((line) => line.trim()).filter(Boolean);
+  const users = new Set();
+  let lastMessage = "";
+
+  lines.forEach((line) => {
+    const match = line.match(/^(\d{1,2}\/\d{1,2}\/\d{2,4}),?\s+(\d{1,2}:\d{2})(?:\s?[AP]M)?\s+-\s+([^:]+):/);
+    if (match) {
+      lastMessage = `${match[1]} ${match[2]}`;
+      users.add(match[3].trim());
+    }
+  });
+
+  return {
+    messages: lines.length,
+    participants: users.size,
+    lastMessage: lastMessage || "Unknown",
+    estimate: lines.length ? Math.max(1, Math.ceil(lines.length / 180)) : 0
+  };
+}
+
+function normalizeTopWord(item) {
+  if (Array.isArray(item)) {
+    return { word: item[0], count: item[1] };
+  }
+  return item;
+}
+
+function extractActionItems(text) {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const start = lines.findIndex((line) => /action|todo|next step/i.test(line));
+  if (start === -1) return text;
+
+  const items = [];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^[A-Z][A-Za-z ]+:$/.test(line) && items.length) break;
+    if (/^[-*•]|\d+\./.test(line)) items.push(line.replace(/^[-*•]\s*/, ""));
+  }
+  return items.length ? items.join("\n") : text;
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return "0 KB";
+  const units = ["B", "KB", "MB", "GB"];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
+}
+
+function StructuredText({ text }) {
+  if (!text) return null;
+
+  const lines = text.split("\n");
+  const blocks = [];
+  let list = [];
+
+  function flushList() {
+    if (list.length) {
+      blocks.push({ type: "list", items: list });
+      list = [];
+    }
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line) {
+      flushList();
+      return;
+    }
+
+    const bullet = line.match(/^[-*•]\s+(.+)/);
+    const numbered = line.match(/^\d+\.\s+(.+)/);
+    if (bullet || numbered) {
+      list.push((bullet || numbered)[1]);
+      return;
+    }
+
+    flushList();
+    if (/^#{1,3}\s+/.test(line)) {
+      blocks.push({ type: "heading", text: line.replace(/^#{1,3}\s+/, "") });
+    } else if (/^[A-Z][A-Za-z /&-]{2,}:$/.test(line) || /^(Main Topics|Decisions|Action Items|Evidence|TLDR|Summary)/i.test(line)) {
+      blocks.push({ type: "heading", text: line.replace(/:$/, "") });
+    } else {
+      blocks.push({ type: "paragraph", text: line });
+    }
+  });
+  flushList();
+
+  return (
+    <div className="structured-output">
+      {blocks.map((block, index) => {
+        if (block.type === "heading") return <h3 key={index}>{block.text}</h3>;
+        if (block.type === "list") {
+          return (
+            <ul key={index}>
+              {block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}
+            </ul>
+          );
+        }
+        return <p key={index}>{block.text}</p>;
+      })}
+    </div>
+  );
+}
+
+function MetricCard({ label, value }) {
+  return (
+    <div className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function BarList({ data }) {
+  const entries = Object.entries(data || {}).sort((a, b) => b[1] - a[1]);
+  const max = Math.max(1, ...entries.map(([, value]) => value));
+
+  if (!entries.length) return <div className="placeholder">No participant data found.</div>;
+
+  return (
+    <div className="bar-list">
+      {entries.map(([label, value]) => (
+        <div className="bar-row" key={label}>
+          <div className="bar-label">{label}</div>
+          <div className="bar-track">
+            <div className="bar-fill" style={{ width: `${Math.max(8, (value / max) * 100)}%` }} />
+          </div>
+          <div className="bar-value">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TopicCard({ topic, index }) {
+  return (
+    <article className="topic-card">
+      <div className="topic-card-header">
+        <div>
+          <span className="topic-kicker">Topic {index + 1}</span>
+          <h3>{topic.topic_summary || "Untitled topic"}</h3>
+        </div>
+        <span className="topic-count">{(topic.sample_messages || []).length} samples</span>
+      </div>
+
+      <div className="chip-row">
+        {(topic.keywords || []).map((keyword) => (
+          <span className="keyword-chip" key={keyword}>{keyword}</span>
+        ))}
+      </div>
+
+      <div className="quote-list">
+        {(topic.sample_messages || []).map((message, messageIndex) => (
+          <blockquote key={messageIndex}>{message}</blockquote>
+        ))}
+      </div>
+    </article>
+  );
+}
 
 function App() {
   const [chat, setChat] = useState("");
   const [summary, setSummary] = useState("");
   const [loading, setLoading] = useState(false);
-
   const [copied, setCopied] = useState(false);
-  const [model, setModel] = useState("accurate"); // fast | accurate
-  const [lastN, setLastN] = useState(0); // 0 = summarize all
+  const [model, setModel] = useState("accurate");
+  const [lastN, setLastN] = useState(0);
   const [statusMsg, setStatusMsg] = useState("");
-
-  // Ask feature
+  const [summaryMode, setSummaryMode] = useState("normal");
+  const [evidenceMode, setEvidenceMode] = useState(true);
   const [question, setQuestion] = useState("");
   const [askLoading, setAskLoading] = useState(false);
   const [answer, setAnswer] = useState("");
-
-  // Analytics feature
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [analytics, setAnalytics] = useState(null);
+  const [topicsLoading, setTopicsLoading] = useState(false);
+  const [topics, setTopics] = useState([]);
+  const [activeTab, setActiveTab] = useState("summary");
+  const [fileInfo, setFileInfo] = useState(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(true);
+  const [workflowStep, setWorkflowStep] = useState("");
+  const fileInputRef = useRef(null);
 
-  // ✅ NGROK BACKEND URL (so it works on phone also)
-  const API_BASE = "https://ungovernable-noncohesively-maryln.ngrok-free.dev";
-
+  const busy = loading || askLoading || analyticsLoading || topicsLoading;
+  const stats = useMemo(() => parseChatStats(chat), [chat]);
   const canSummarize = useMemo(() => chat.trim().length > 0 && !loading, [chat, loading]);
-
-  const canAsk = useMemo(
-    () => summary.trim().length > 0 && question.trim().length > 0 && !askLoading,
-    [summary, question, askLoading]
-  );
-
-  const canAnalyze = useMemo(
-    () => chat.trim().length > 0 && !analyticsLoading,
-    [chat, analyticsLoading]
-  );
+  const canAsk = useMemo(() => summary.trim().length > 0 && question.trim().length > 0 && !askLoading, [summary, question, askLoading]);
+  const canAnalyze = useMemo(() => chat.trim().length > 0 && !analyticsLoading, [chat, analyticsLoading]);
+  const canDetectTopics = useMemo(() => chat.trim().length > 0 && !topicsLoading, [chat, topicsLoading]);
 
   async function summarizeChat() {
     if (!chat.trim()) return;
@@ -45,20 +212,24 @@ function App() {
     setStatusMsg("");
     setAnswer("");
     setQuestion("");
+    setWorkflowStep("Cleaning chat");
+    setActiveTab("summary");
 
     try {
-      const payload = {
-        chat_text: chat,
-        model: model,
-        last_n: Number(lastN) || 0
-      };
-
+      setWorkflowStep("Sending chat to local model");
       const res = await fetch(`${API_BASE}/summarize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          chat_text: chat,
+          model,
+          last_n: Number(lastN) || 0,
+          mode: summaryMode,
+          evidence: evidenceMode
+        })
       });
 
+      setWorkflowStep("Formatting summary");
       const data = await res.json();
 
       if (!res.ok) {
@@ -74,6 +245,7 @@ function App() {
       setStatusMsg("Error generating summary.");
     } finally {
       setLoading(false);
+      setWorkflowStep("");
     }
   }
 
@@ -83,29 +255,21 @@ function App() {
     setAskLoading(true);
     setAnswer("");
     setStatusMsg("");
+    setWorkflowStep("Finding answer in chat");
 
     try {
-      const payload = {
-        chat_text: chat,
-        summary: summary,
-        question: question,
-        model: model
-      };
-
       const res = await fetch(`${API_BASE}/ask`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ chat_text: chat, summary, question, model })
       });
 
       const data = await res.json();
-
       if (!res.ok) {
         setAnswer("");
         setStatusMsg(data?.detail || "Error answering question.");
         return;
       }
-
       setAnswer(data.answer || "");
     } catch (e) {
       console.error(e);
@@ -113,6 +277,7 @@ function App() {
       setStatusMsg("Error answering question.");
     } finally {
       setAskLoading(false);
+      setWorkflowStep("");
     }
   }
 
@@ -122,27 +287,22 @@ function App() {
     setAnalyticsLoading(true);
     setStatusMsg("");
     setAnalytics(null);
+    setActiveTab("analytics");
+    setWorkflowStep("Crunching chat statistics");
 
     try {
-      const payload = {
-        chat_text: chat,
-        last_n: 0 // analyze full chat box by default
-      };
-
       const res = await fetch(`${API_BASE}/analytics`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ chat_text: chat, last_n: 0 })
       });
 
       const data = await res.json();
-
       if (!res.ok) {
         setAnalytics(null);
         setStatusMsg(data?.detail || "Error generating analytics.");
         return;
       }
-
       setAnalytics(data);
     } catch (e) {
       console.error(e);
@@ -150,6 +310,51 @@ function App() {
       setStatusMsg("Error generating analytics.");
     } finally {
       setAnalyticsLoading(false);
+      setWorkflowStep("");
+    }
+  }
+
+  async function detectTopics() {
+    if (!chat.trim()) return;
+
+    setTopicsLoading(true);
+    setStatusMsg("");
+    setTopics([]);
+    setActiveTab("topics");
+    setWorkflowStep("Clustering related messages");
+
+    try {
+      const res = await fetch(`${API_BASE}/topics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_text: chat,
+          last_n: 0,
+          max_topics: 7,
+          chunk_size: 200,
+          sample_per_topic: 3,
+          model: "fast"
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setTopics([]);
+        setStatusMsg(data?.detail || "Error detecting topics.");
+        return;
+      }
+
+      setTopics(data.topics || []);
+      if (!data.topics || data.topics.length === 0) {
+        setStatusMsg("No topics found. Try pasting more messages.");
+      }
+    } catch (e) {
+      console.error(e);
+      setTopics([]);
+      setStatusMsg("Error detecting topics.");
+    } finally {
+      setTopicsLoading(false);
+      setWorkflowStep("");
     }
   }
 
@@ -160,20 +365,31 @@ function App() {
     setTimeout(() => setCopied(false), 1500);
   }
 
-  function downloadSummary() {
-    if (!summary) return;
-    const blob = new Blob([summary], { type: "text/plain" });
+  function downloadText(content, fileName, type = "text/plain") {
+    if (!content) return;
+    const blob = new Blob([content], { type });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "chat-summary.txt";
+    a.download = fileName;
     a.click();
     URL.revokeObjectURL(url);
   }
 
-  // ✅ ZIP Upload Handler
-  async function handleZipUpload(e) {
-    const file = e.target.files?.[0];
+  function exportSummary(format) {
+    if (!summary) return;
+    if (format === "json") {
+      downloadText(JSON.stringify({ summary, answer, analytics, topics }, null, 2), "chat-summary.json", "application/json");
+    } else if (format === "md") {
+      downloadText(`# Chat Summary\n\n${summary}`, "chat-summary.md", "text/markdown");
+    } else if (format === "actions") {
+      downloadText(extractActionItems(summary), "chat-action-items.txt");
+    } else {
+      downloadText(summary, "chat-summary.txt");
+    }
+  }
+
+  async function loadZipFile(file) {
     if (!file) return;
 
     setStatusMsg("");
@@ -182,15 +398,14 @@ function App() {
     setAnswer("");
     setQuestion("");
     setAnalytics(null);
+    setTopics([]);
+    setWorkflowStep("Reading ZIP");
 
     try {
-      setStatusMsg("📦 Reading ZIP...");
-
       const arrayBuffer = await file.arrayBuffer();
       const zip = await JSZip.loadAsync(arrayBuffer);
-
-      // Find all .txt files
       const txtFiles = [];
+
       zip.forEach((relativePath, zipEntry) => {
         if (!zipEntry.dir && relativePath.toLowerCase().endsWith(".txt")) {
           txtFiles.push(zipEntry);
@@ -198,244 +413,280 @@ function App() {
       });
 
       if (txtFiles.length === 0) {
-        setStatusMsg("❌ No .txt file found inside ZIP. Export chat again (Without media).");
+        setStatusMsg("No .txt file found inside ZIP. Export chat again without media.");
         return;
       }
 
-      // Pick the biggest .txt file (most likely the chat)
+      setWorkflowStep("Choosing chat text file");
       let bestFile = null;
       let bestSize = -1;
 
       for (const entry of txtFiles) {
         const content = await entry.async("string");
-        const size = content.length;
-        if (size > bestSize) {
-          bestSize = size;
+        if (content.length > bestSize) {
+          bestSize = content.length;
           bestFile = { entry, content };
         }
       }
 
       if (!bestFile) {
-        setStatusMsg("❌ Could not read chat text from ZIP.");
+        setStatusMsg("Could not read chat text from ZIP.");
         return;
       }
 
       setChat(bestFile.content);
-      setStatusMsg(`✅ Loaded: ${bestFile.entry.name}`);
+      setFileInfo({ name: bestFile.entry.name, size: formatBytes(file.size) });
+      setStatusMsg(`Loaded ${bestFile.entry.name}`);
     } catch (err) {
       console.error(err);
-      setStatusMsg("❌ Failed to read ZIP. Try exporting again.");
+      setStatusMsg("Failed to read ZIP. Try exporting again.");
     } finally {
-      e.target.value = "";
+      setWorkflowStep("");
     }
+  }
+
+  function handleZipUpload(e) {
+    loadZipFile(e.target.files?.[0]);
+    e.target.value = "";
+  }
+
+  function handleDrop(e) {
+    e.preventDefault();
+    setDragActive(false);
+    loadZipFile(e.dataTransfer.files?.[0]);
+  }
+
+  function clearAll() {
+    setChat("");
+    setSummary("");
+    setStatusMsg("");
+    setCopied(false);
+    setQuestion("");
+    setAnswer("");
+    setAnalytics(null);
+    setTopics([]);
+    setFileInfo(null);
+    setWorkflowStep("");
+    setActiveTab("summary");
   }
 
   return (
     <div className="page">
-      <div className="topbar">
+      <header className="topbar">
         <div className="brand">
-          <div className="logo">⚡</div>
+          <div className="logo">CS</div>
           <div>
             <div className="title">Chat Summarizer</div>
-            <div className="subtitle">Paste unread chats or upload WhatsApp ZIP</div>
+            <div className="subtitle">Paste unread chats or import a WhatsApp ZIP</div>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="container">
-        {/* CHAT PANEL */}
-        <section className="panel">
-          <header className="panel-header">
-            <div className="panel-title">Chat Input</div>
+      <main className="container">
+        <section className="panel input-panel">
+          <header className="panel-header split">
+            <div>
+              <div className="panel-title">Chat Input</div>
+              <div className="panel-note">Local summarization for long conversations</div>
+            </div>
 
-            <div className="controls">
-              <label className="file-btn">
-                Upload WhatsApp ZIP
-                <input type="file" accept=".zip" onChange={handleZipUpload} />
+            <button className="small-btn" type="button" onClick={() => setSettingsOpen((open) => !open)}>
+              {settingsOpen ? "Hide settings" : "Show settings"}
+            </button>
+          </header>
+
+          {settingsOpen && (
+            <div className="settings-grid">
+              <label>
+                Model
+                <select className="select" value={model} onChange={(e) => setModel(e.target.value)} disabled={busy}>
+                  <option value="fast">Fast</option>
+                  <option value="accurate">Accurate</option>
+                </select>
               </label>
 
-              <select
-                className="select"
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                disabled={loading || askLoading || analyticsLoading}
-              >
-                <option value="fast">⚡ Fast</option>
-                <option value="accurate">🧠 Accurate</option>
-              </select>
+              <label>
+                Summary style
+                <select className="select" value={summaryMode} onChange={(e) => setSummaryMode(e.target.value)} disabled={busy}>
+                  <option value="normal">Normal</option>
+                  <option value="tldr">TLDR, 2 lines</option>
+                  <option value="bullets">Bullet summary</option>
+                  <option value="minutes">Meeting minutes</option>
+                </select>
+              </label>
 
-              <input
-                className="input"
-                type="number"
-                min="0"
-                placeholder="Last N (0 = all)"
-                value={lastN}
-                onChange={(e) => setLastN(e.target.value)}
-                disabled={loading || askLoading || analyticsLoading}
-              />
+              <label>
+                Last N
+                <input className="input" type="number" min="0" placeholder="0 = all" value={lastN} onChange={(e) => setLastN(e.target.value)} disabled={busy} />
+              </label>
+
+              <label className="toggle-row">
+                <input type="checkbox" checked={evidenceMode} onChange={(e) => setEvidenceMode(e.target.checked)} disabled={busy} />
+                <span>Evidence mode</span>
+              </label>
             </div>
-          </header>
+          )}
+
+          <div className="stats-row">
+            <MetricCard label="Messages" value={stats.messages} />
+            <MetricCard label="Participants" value={stats.participants || "-"} />
+            <MetricCard label="Last message" value={stats.lastMessage} />
+            <MetricCard label="Estimate" value={stats.estimate ? `${stats.estimate} min` : "-"} />
+          </div>
+
+          <div
+            className={`dropzone ${dragActive ? "is-dragging" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDragActive(true);
+            }}
+            onDragLeave={() => setDragActive(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input ref={fileInputRef} type="file" accept=".zip" onChange={handleZipUpload} />
+            <strong>Drop WhatsApp ZIP here</strong>
+            <span>{fileInfo ? `${fileInfo.name} (${fileInfo.size})` : "or click to choose a ZIP exported without media"}</span>
+          </div>
 
           <textarea
             className="textarea"
             value={chat}
-            onChange={(e) => setChat(e.target.value)}
-            placeholder="Paste unread chat messages here…"
-            disabled={loading || askLoading || analyticsLoading}
+            onChange={(e) => {
+              setChat(e.target.value);
+              setFileInfo(null);
+            }}
+            placeholder="Paste unread chat messages here..."
+            disabled={busy}
           />
 
           <footer className="panel-footer">
             <button className="primary-btn" onClick={summarizeChat} disabled={!canSummarize}>
-              {loading ? "Summarizing…" : "Summarize"}
+              {loading ? "Summarizing..." : "Summarize"}
             </button>
-
             <button className="secondary-btn" onClick={analyzeChat} disabled={!canAnalyze}>
-              {analyticsLoading ? "Analyzing…" : "Analyze"}
+              {analyticsLoading ? "Analyzing..." : "Analyze"}
             </button>
-
-            <button
-              className="secondary-btn"
-              onClick={() => {
-                setChat("");
-                setSummary("");
-                setStatusMsg("");
-                setCopied(false);
-                setQuestion("");
-                setAnswer("");
-                setAnalytics(null);
-              }}
-              disabled={loading || askLoading || analyticsLoading}
-            >
+            <button className="secondary-btn" onClick={detectTopics} disabled={!canDetectTopics}>
+              {topicsLoading ? "Detecting..." : "Detect topics"}
+            </button>
+            <button className="secondary-btn" onClick={clearAll} disabled={busy}>
               Clear
             </button>
           </footer>
 
-          {statusMsg && <div className="status">{statusMsg}</div>}
+          {(statusMsg || workflowStep) && (
+            <div className="status">
+              {workflowStep && <span className="status-pulse" />}
+              {workflowStep || statusMsg}
+            </div>
+          )}
         </section>
 
-        {/* SUMMARY + ASK + ANALYTICS PANEL */}
-        <section className="panel">
+        <section className="panel results-panel">
           <header className="panel-header">
-            <div className="panel-title">Summary</div>
-
-            <div className="actions">
-              <button className="small-btn" onClick={copySummary} disabled={!summary}>
-                {copied ? "Copied ✓" : "Copy"}
-              </button>
-              <button className="small-btn" onClick={downloadSummary} disabled={!summary}>
-                Download
-              </button>
-            </div>
-          </header>
-
-          <div className="output">
-            {!summary && !loading && <div className="placeholder">Your summary will appear here.</div>}
-            {loading && <div className="placeholder">Thinking…</div>}
-            {summary && <pre className="raw-output">{summary}</pre>}
-          </div>
-
-          {/* ASK MY CHAT */}
-          <div style={{ marginTop: "12px" }}>
-            <div style={{ fontWeight: 700, fontSize: "13px", marginBottom: "8px", opacity: 0.9 }}>
-              Ask My Chat
+            <div className="tabs" role="tablist" aria-label="Result views">
+              {TABS.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={activeTab === tab.id ? "tab active" : "tab"}
+                  onClick={() => setActiveTab(tab.id)}
+                  type="button"
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
 
-            <input
-              className="textarea"
-              style={{ height: "44px" }}
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              placeholder='Example: "Why did he say uninstall it?"'
-              disabled={!summary || loading || askLoading || analyticsLoading}
-            />
-
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "10px" }}>
-              <button className="primary-btn" onClick={askMyChat} disabled={!canAsk}>
-                {askLoading ? "Answering…" : "Ask"}
-              </button>
-            </div>
-
-            <div className="output" style={{ marginTop: "10px", minHeight: "120px" }}>
-              {!answer && !askLoading && <div className="placeholder">Answer will appear here.</div>}
-              {askLoading && <div className="placeholder">Thinking…</div>}
-              {answer && <pre className="raw-output">{answer}</pre>}
-            </div>
-          </div>
-
-          {/* ANALYTICS */}
-          <div style={{ marginTop: "12px" }}>
-            <div style={{ fontWeight: 700, fontSize: "13px", marginBottom: "8px", opacity: 0.9 }}>
-              Analytics
-            </div>
-
-            {!analytics && !analyticsLoading && (
-              <div className="placeholder">Click "Analyze" to see chat statistics.</div>
-            )}
-
-            {analyticsLoading && <div className="placeholder">Crunching numbers…</div>}
-
-            {analytics && (
-              <div className="output" style={{ marginTop: "10px", minHeight: "180px" }}>
-                <div style={{ fontSize: "13px", lineHeight: "1.6" }}>
-                  <div><b>Total Messages:</b> {analytics.total_messages}</div>
-                  <div><b>Most Active Day:</b> {analytics.most_active_day || "N/A"}</div>
-                  <div><b>Most Active Hour:</b> {analytics.most_active_hour || "N/A"}</div>
-
-                  <div style={{ marginTop: "12px" }}>
-                    <b>Messages per User:</b>
-                    <ul style={{ margin: "6px 0 0 18px" }}>
-                      {Object.entries(analytics.messages_per_user || {}).map(([user, count]) => (
-                        <li key={user}>{user}: {count}</li>
-                      ))}
-                    </ul>
-                  </div>
-
-                  <div style={{ marginTop: "12px" }}>
-                    <b>Top 20 Words:</b>
-                    <div style={{ marginTop: "6px", display: "flex", flexWrap: "wrap", gap: "6px" }}>
-                      {(analytics.top_words || []).map((w) => (
-                        <span
-                          key={w.word}
-                          style={{
-                            padding: "6px 10px",
-                            borderRadius: "999px",
-                            background: "rgba(255,255,255,0.06)",
-                            border: "1px solid rgba(255,255,255,0.10)",
-                            fontSize: "12px"
-                          }}
-                        >
-                          {w.word} ({w.count})
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: "12px" }}>
-                    <b>Top Emojis:</b>
-                    <div style={{ marginTop: "6px", display: "flex", flexWrap: "wrap", gap: "10px" }}>
-                      {(analytics.top_emojis || []).map((e) => (
-                        <span
-                          key={e.emoji}
-                          style={{
-                            padding: "6px 10px",
-                            borderRadius: "12px",
-                            background: "rgba(255,255,255,0.06)",
-                            border: "1px solid rgba(255,255,255,0.10)",
-                            fontSize: "14px"
-                          }}
-                        >
-                          {e.emoji} <span style={{ opacity: 0.7, fontSize: "12px" }}>({e.count})</span>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-
-                </div>
+            {activeTab === "summary" && (
+              <div className="actions">
+                <button className="small-btn" onClick={copySummary} disabled={!summary}>
+                  {copied ? "Copied" : "Copy"}
+                </button>
+                <select className="small-select" value="" onChange={(e) => exportSummary(e.target.value)} disabled={!summary}>
+                  <option value="" disabled>Export</option>
+                  <option value="txt">Text</option>
+                  <option value="md">Markdown</option>
+                  <option value="json">JSON</option>
+                  <option value="actions">Actions only</option>
+                </select>
               </div>
             )}
-          </div>
+          </header>
+
+          {activeTab === "summary" && (
+            <div className="output main-output">
+              {!summary && !loading && <div className="placeholder">Your structured summary will appear here.</div>}
+              {loading && <div className="placeholder">{workflowStep || "Thinking..."}</div>}
+              {summary && <StructuredText text={summary} />}
+            </div>
+          )}
+
+          {activeTab === "ask" && (
+            <div className="tab-body">
+              <div className="ask-row">
+                <input
+                  className="question-input"
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  placeholder='Ask something like "What decision did they make?"'
+                  disabled={!summary || loading || askLoading || analyticsLoading || topicsLoading}
+                />
+                <button className="primary-btn" onClick={askMyChat} disabled={!canAsk}>
+                  {askLoading ? "Answering..." : "Ask"}
+                </button>
+              </div>
+
+              <div className="output main-output">
+                {!answer && !askLoading && <div className="placeholder">Answers use only the chat text.</div>}
+                {askLoading && <div className="placeholder">{workflowStep || "Thinking..."}</div>}
+                {answer && <StructuredText text={answer} />}
+              </div>
+            </div>
+          )}
+
+          {activeTab === "analytics" && (
+            <div className="tab-body">
+              {!analytics && !analyticsLoading && <div className="placeholder">Click Analyze to see chat statistics.</div>}
+              {analyticsLoading && <div className="placeholder">{workflowStep || "Crunching numbers..."}</div>}
+              {analytics && (
+                <>
+                  <div className="stats-row result-stats">
+                    <MetricCard label="Total messages" value={analytics.total_messages} />
+                    <MetricCard label="Top sender" value={Object.entries(analytics.messages_per_user || {}).sort((a, b) => b[1] - a[1])[0]?.[0] || "-"} />
+                    <MetricCard label="Most active day" value={analytics.most_active_day || "-"} />
+                    <MetricCard label="Peak hour" value={analytics.most_active_hour || "-"} />
+                  </div>
+
+                  <div className="output chart-output">
+                    <h3>Messages per user</h3>
+                    <BarList data={analytics.messages_per_user} />
+
+                    <h3>Top words</h3>
+                    <div className="chip-row">
+                      {(analytics.top_words || []).map((item) => {
+                        const word = normalizeTopWord(item);
+                        return <span className="keyword-chip" key={word.word}>{word.word} ({word.count})</span>;
+                      })}
+                      {(!analytics.top_words || analytics.top_words.length === 0) && <span className="placeholder">No useful words found.</span>}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {activeTab === "topics" && (
+            <div className="tab-body topic-list">
+              {topicsLoading && <div className="placeholder">{workflowStep || "Detecting topics..."}</div>}
+              {!topicsLoading && topics.length === 0 && <div className="placeholder">Click Detect topics to cluster the chat into themes.</div>}
+              {!topicsLoading && topics.map((topic, index) => (
+                <TopicCard key={`${topic.chunk_id}-${topic.topic_id}-${index}`} topic={topic} index={index} />
+              ))}
+            </div>
+          )}
         </section>
-      </div>
+      </main>
     </div>
   );
 }
