@@ -143,6 +143,63 @@ def select_last_messages(chat, last_n):
     return "\n".join(lines)
 
 
+def parse_chat_metadata(line):
+    line = line.strip()
+    patterns = [
+        r"^\[(?P<time>\d{1,2}:\d{2}),\s*(?P<date>\d{1,2}/\d{1,2}/\d{2,4})\]\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
+        r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),?\s*(?P<time>\d{1,2}:\d{2})(?:\s?[AP]M)?\s+-\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
+    ]
+
+    for pattern in patterns:
+        match = re.match(pattern, line)
+        if match:
+            return {
+                "date": match.group("date").strip(),
+                "user": match.group("user").strip(),
+                "text": match.group("text").strip(),
+            }
+
+    return {"date": "", "user": "", "text": line}
+
+
+def split_chat_sections(chat, max_lines=180):
+    lines = [line for line in chat.split("\n") if line.strip()]
+    sections = []
+    current = []
+    current_date = ""
+    current_users = set()
+
+    def push_current():
+        if current:
+            sections.append({
+                "date": current_date or "Unknown date",
+                "users": sorted(current_users),
+                "text": "\n".join(current),
+                "line_count": len(current),
+            })
+
+    for line in lines:
+        metadata = parse_chat_metadata(line)
+        line_date = metadata["date"]
+        starts_new_date = current and line_date and current_date and line_date != current_date
+        starts_new_chunk = current and len(current) >= max_lines
+
+        if starts_new_date or starts_new_chunk:
+            push_current()
+            current = []
+            current_users = set()
+            current_date = ""
+
+        if line_date and not current_date:
+            current_date = line_date
+        if metadata["user"]:
+            current_users.add(metadata["user"])
+        current.append(line)
+
+    push_current()
+    return sections
+
+
 def is_noise(text):
     text = text.lower()
     if "<media omitted>" in text:
@@ -203,12 +260,25 @@ def is_filler_message(text):
 
 def summary_instructions(mode):
     instructions = {
-        "tldr": "Return a TLDR in exactly 2 short lines.",
-        "bullets": "Return concise bullet points only.",
-        "minutes": "Return meeting minutes with topics, decisions, and action items.",
-        "normal": "Return a clear structured summary with main topics, decisions, and action items.",
+        "tldr": "Return a friendly TLDR in exactly 2 short lines.",
+        "bullets": "Return 5 to 8 clean bullet points. Keep each bullet complete, specific, and under 25 words.",
+        "minutes": "Return readable meeting minutes with short sections for context, decisions, and action items.",
+        "normal": (
+            "Return a warm, easy-to-scan digest. Use short Markdown sections: "
+            "At a glance, Key moments, Decisions or plans, and Things to remember."
+        ),
     }
     return instructions.get(mode, instructions["normal"])
+
+
+def summary_token_limit(mode):
+    limits = {
+        "tldr": 120,
+        "bullets": 420,
+        "minutes": 520,
+        "normal": 380,
+    }
+    return limits.get(mode, limits["normal"])
 
 
 def simple_kmeans(vectors, k, iterations=8):
@@ -297,6 +367,67 @@ TOPIC:
     return summary or cluster_messages[0]
 
 
+def summarize_chat_section(section, index, total, model):
+    users = ", ".join(section["users"]) if section["users"] else "Unknown participants"
+    prompt = f"""
+Summarize this chat section.
+Rules:
+- Use only this section.
+- Do not ignore logistics, decisions, jokes, plans, or emotional tone.
+- Preserve participant names when useful.
+- Return 3 to 5 short bullets with natural wording.
+
+SECTION {index} OF {total}
+Date: {section["date"]}
+Participants: {users}
+
+CHAT:
+{section["text"]}
+
+SECTION SUMMARY:
+"""
+    return ollama_generate(prompt, 220, model)
+
+
+def summarize_from_sections(sections, req, evidence_rule):
+    section_summaries = []
+
+    for index, section in enumerate(sections, start=1):
+        users = ", ".join(section["users"]) if section["users"] else "Unknown participants"
+        summary = summarize_chat_section(section, index, len(sections), req.model)
+        if not summary:
+            summary = "No reliable summary generated for this section."
+
+        section_summaries.append(
+            f"SECTION {index}\n"
+            f"Date: {section['date']}\n"
+            f"Participants: {users}\n"
+            f"Messages: {section['line_count']}\n"
+            f"{summary}"
+        )
+
+    combined = "\n\n".join(section_summaries)
+    prompt = f"""
+{summary_instructions(req.mode)}
+{evidence_rule}
+
+You are combining summaries from multiple parts of the same pasted chat.
+Rules:
+- Cover EVERY section below, including the earliest section.
+- If sections have different dates or participants, keep those conversations distinct.
+- Do not replace earlier conversations with later ones.
+- Use only the section summaries below.
+- Write for a normal person reading a chat recap, not an academic report.
+- Prefer short paragraphs and crisp bullets over dense explanation.
+
+SECTION SUMMARIES:
+{combined}
+
+FINAL SUMMARY:
+"""
+    return ollama_generate(prompt, summary_token_limit(req.mode), req.model)
+
+
 @app.get("/")
 def root():
     return {"status": "Backend running"}
@@ -305,11 +436,21 @@ def root():
 @app.post("/summarize")
 def summarize(req: SummarizeRequest):
     chat = select_last_messages(clean_chat(req.chat_text), req.last_n)
+    sections = split_chat_sections(chat)
     evidence_rule = (
         "Use only evidence from the chat. If something is unclear, say it is unclear."
         if req.evidence
         else "Summarize naturally, but do not invent facts."
     )
+
+    use_section_summaries = len(sections) > 1 or sum(section["line_count"] for section in sections) > 120
+
+    if use_section_summaries:
+        try:
+            result = summarize_from_sections(sections, req, evidence_rule)
+            return {"summary": result}
+        except Exception:
+            return {"summary": "Error generating summary"}
 
     prompt = f"""
 {summary_instructions(req.mode)}
@@ -320,7 +461,7 @@ CHAT:
 """
 
     try:
-        result = ollama_generate(prompt, 250, req.model)
+        result = ollama_generate(prompt, summary_token_limit(req.mode), req.model)
         return {"summary": result}
     except Exception:
         return {"summary": "Error generating summary"}

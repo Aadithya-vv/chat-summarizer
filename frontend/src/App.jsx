@@ -116,6 +116,151 @@ function StructuredText({ text }) {
   );
 }
 
+function DigestText({ text }) {
+  if (!text) return null;
+
+  function cleanInline(value) {
+    return value
+      .replace(/\*\*(.*?)\*\*/g, "$1")
+      .replace(/__(.*?)__/g, "$1")
+      .replace(/^SECTION\s+\d+\s*[:.-]?\s*/i, "Conversation ")
+      .trim();
+  }
+
+  const blocks = [];
+  let list = [];
+
+  function flushList() {
+    if (list.length) {
+      blocks.push({ type: "list", items: list });
+      list = [];
+    }
+  }
+
+  text.split("\n").forEach((rawLine) => {
+    const line = rawLine.trim();
+    if (!line) {
+      flushList();
+      return;
+    }
+
+    const bullet = line.match(/^[-*\u2022]\s+(.+)/);
+    const numbered = line.match(/^\d+\.\s+(.+)/);
+    if (bullet || numbered) {
+      list.push(cleanInline((bullet || numbered)[1]));
+      return;
+    }
+
+    flushList();
+    if (/^#{1,3}\s+/.test(line) || /^\*\*.+\*\*$/.test(line)) {
+      blocks.push({ type: "heading", text: cleanInline(line.replace(/^#{1,3}\s+/, "")) });
+    } else if (/^[A-Z][A-Za-z /&-]{2,}:$/.test(line) || /^(At a glance|Key moments|Decisions|Plans|Action Items|Things to remember|Evidence|TLDR|Summary|Main Topics)/i.test(line)) {
+      blocks.push({ type: "heading", text: cleanInline(line.replace(/:$/, "")) });
+    } else if (/^(Date|Participants|Messages):/i.test(line)) {
+      blocks.push({ type: "meta", text: cleanInline(line) });
+    } else {
+      blocks.push({ type: "paragraph", text: cleanInline(line) });
+    }
+  });
+  flushList();
+
+  const intro = [];
+  const cards = [];
+  let currentCard = null;
+
+  blocks.forEach((block) => {
+    if (block.type === "heading") {
+      currentCard = { title: block.text, blocks: [] };
+      cards.push(currentCard);
+      return;
+    }
+
+    if (currentCard) {
+      currentCard.blocks.push(block);
+    } else {
+      intro.push(block);
+    }
+  });
+
+  function renderBlock(block, index) {
+    if (block.type === "list") {
+      return (
+        <ul key={index}>
+          {block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>)}
+        </ul>
+      );
+    }
+    if (block.type === "meta") return <div className="digest-meta" key={index}>{block.text}</div>;
+    return <p key={index}>{block.text}</p>;
+  }
+
+  function cardPreview(card) {
+    const firstParagraph = card.blocks.find((block) => block.type === "paragraph")?.text;
+    const firstListItem = card.blocks.find((block) => block.type === "list")?.items?.[0];
+    return firstParagraph || firstListItem || "Tap to read this part.";
+  }
+
+  function cardDate(card) {
+    const metaDate = card.blocks
+      .find((block) => block.type === "meta" && /^Date:/i.test(block.text))
+      ?.text.replace(/^Date:\s*/i, "");
+    const titleDate = card.title.match(/Date:\s*([^)]+)/i)?.[1];
+    return metaDate || titleDate || "Summary";
+  }
+
+  const dateGroups = [];
+  cards.forEach((card) => {
+    const date = cardDate(card);
+    const existingGroup = dateGroups.find((group) => group.date === date);
+
+    if (existingGroup) {
+      existingGroup.cards.push(card);
+    } else {
+      dateGroups.push({ date, cards: [card] });
+    }
+  });
+
+  function groupPreview(group) {
+    return group.cards.map((card) => card.title).slice(0, 2).join(" | ") || "Tap to read this date.";
+  }
+
+  return (
+    <div className="structured-output digest-output">
+      {intro.length > 0 && (
+        <section className="digest-card digest-card-feature">
+          {intro.map(renderBlock)}
+        </section>
+      )}
+
+      {dateGroups.map((group, groupIndex) => (
+        <details className="date-card" key={`${group.date}-${groupIndex}`} open={groupIndex === 0}>
+          <summary>
+            <span>
+              <strong>{group.date}</strong>
+              <small>{group.cards.length} section{group.cards.length === 1 ? "" : "s"} | {groupPreview(group)}</small>
+            </span>
+          </summary>
+          <div className="date-card-body">
+            {group.cards.map((card, index) => (
+              <details className="digest-card digest-accordion" key={`${card.title}-${index}`} open={groupIndex === 0 && index === 0}>
+                <summary>
+                  <span>
+                    <strong>{card.title}</strong>
+                    <small>{cardPreview(card)}</small>
+                  </span>
+                </summary>
+                <div className="digest-card-body">
+                  {card.blocks.map(renderBlock)}
+                </div>
+              </details>
+            ))}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
 function MetricCard({ label, value }) {
   return (
     <div className="metric-card">
@@ -618,7 +763,7 @@ function App() {
             <div className="output main-output">
               {!summary && !loading && <div className="placeholder">Your structured summary will appear here.</div>}
               {loading && <div className="placeholder">{workflowStep || "Thinking..."}</div>}
-              {summary && <StructuredText text={summary} />}
+              {summary && <DigestText text={summary} />}
             </div>
           )}
 
@@ -640,7 +785,7 @@ function App() {
               <div className="output main-output">
                 {!answer && !askLoading && <div className="placeholder">Answers use only the chat text.</div>}
                 {askLoading && <div className="placeholder">{workflowStep || "Thinking..."}</div>}
-                {answer && <StructuredText text={answer} />}
+                {answer && <DigestText text={answer} />}
               </div>
             </div>
           )}

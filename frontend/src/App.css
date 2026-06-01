@@ -341,13 +341,14 @@ textarea {
   flex: 1;
   border-radius: 8px;
   padding: 14px;
-  background: var(--field);
+  background: linear-gradient(180deg, rgba(13, 15, 18, 0.96), rgba(16, 19, 23, 0.98));
   border: 1px solid var(--line);
   overflow: auto;
 }
 
 .main-output {
   min-height: 510px;
+  padding: 16px;
 }
 
 .placeholder {
@@ -357,7 +358,9 @@ textarea {
 
 .structured-output {
   font-size: 14px;
-  line-height: 1.62;
+  line-height: 1.7;
+  max-width: 820px;
+  margin: 0 auto;
 }
 
 .structured-output h3,
@@ -385,6 +388,237 @@ textarea {
 
 .structured-output li {
   margin-bottom: 7px;
+}
+
+.digest-output {
+  display: grid;
+  gap: 12px;
+}
+
+.digest-card {
+  padding: 16px 16px 14px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.085);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.16);
+}
+
+.date-card {
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.18);
+}
+
+.date-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+  background: linear-gradient(135deg, rgba(104, 211, 145, 0.12), rgba(242, 179, 102, 0.08));
+}
+
+.date-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.date-card > summary::before {
+  content: "";
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: rgba(104, 211, 145, 0.18);
+  border: 1px solid rgba(104, 211, 145, 0.26);
+  flex: 0 0 auto;
+}
+
+.date-card > summary::after {
+  content: "+";
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.date-card[open] > summary::after {
+  content: "-";
+}
+
+.date-card > summary span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.date-card > summary strong {
+  color: #f7fafc;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.date-card > summary small {
+  color: #c4ced8;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+
+.date-card-body {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.digest-accordion {
+  padding: 0;
+  overflow: hidden;
+  box-shadow: none;
+}
+
+.digest-accordion summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.digest-accordion summary::-webkit-details-marker {
+  display: none;
+}
+
+.digest-accordion summary::before {
+  content: "";
+  width: 7px;
+  height: 24px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), var(--warn));
+  flex: 0 0 auto;
+}
+
+.digest-accordion summary::after {
+  content: "+";
+  margin-left: auto;
+  color: var(--accent);
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.digest-accordion[open] summary::after {
+  content: "-";
+}
+
+.digest-accordion summary span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.digest-accordion summary strong {
+  color: #f7fafc;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.digest-accordion summary small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+}
+
+.digest-card-body {
+  padding: 0 14px 14px;
+}
+
+.digest-card-feature {
+  background: linear-gradient(135deg, rgba(104, 211, 145, 0.13), rgba(242, 179, 102, 0.08));
+  border-color: rgba(104, 211, 145, 0.24);
+}
+
+.digest-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: #f7fafc;
+  font-size: 15px;
+}
+
+.digest-card h3::before {
+  content: "";
+  width: 7px;
+  height: 22px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), var(--warn));
+  flex: 0 0 auto;
+}
+
+.digest-accordion h3 {
+  display: none;
+}
+
+.digest-card p {
+  margin: 0 0 10px;
+  color: #dce4ec;
+}
+
+.digest-card p:last-child,
+.digest-card ul:last-child {
+  margin-bottom: 0;
+}
+
+.digest-card ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.digest-card li {
+  position: relative;
+  margin: 0;
+  padding: 9px 10px 9px 32px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.16);
+  color: #edf2f7;
+}
+
+.digest-card li::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  top: 17px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+.digest-meta {
+  display: inline-flex;
+  width: fit-content;
+  margin: 0 8px 8px 0;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: rgba(104, 211, 145, 0.1);
+  border: 1px solid rgba(104, 211, 145, 0.18);
+  color: #bff2d3;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .tab-body {
@@ -576,6 +810,58 @@ blockquote {
 
   .tab {
     flex: 1;
+  }
+
+  .main-output {
+    min-height: 430px;
+    padding: 10px;
+  }
+
+  .digest-output {
+    gap: 8px;
+  }
+
+  .digest-card {
+    padding: 12px;
+  }
+
+  .date-card > summary {
+    padding: 10px 11px;
+  }
+
+  .date-card > summary::before {
+    width: 28px;
+    height: 28px;
+  }
+
+  .date-card-body {
+    padding: 8px;
+    gap: 7px;
+  }
+
+  .digest-accordion {
+    padding: 0;
+  }
+
+  .digest-accordion summary {
+    padding: 10px 11px;
+  }
+
+  .digest-card-body {
+    padding: 0 11px 11px;
+  }
+
+  .digest-card p {
+    margin-bottom: 8px;
+  }
+
+  .digest-card li {
+    padding: 8px 9px 8px 28px;
+  }
+
+  .digest-card li::before {
+    left: 10px;
+    top: 16px;
   }
 }
 
