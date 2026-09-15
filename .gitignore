@@ -15,3 +15,6 @@ dist/
 
 # Logs
 *.log
+
+# Local app data
+backend/memory_store.json

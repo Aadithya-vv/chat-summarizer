@@ -1,83 +1,60 @@
-# Chat Summarizer 🧠💬
+# Chat Summarizer
 
-A web application that summarizes long chat conversations (100+ unread messages) into clear, structured insights using a **local Large Language Model (LLM)**.
+A local-first AI workspace for messy WhatsApp and group chats.
 
----
+The app lets you paste a chat or upload a WhatsApp ZIP export, then summarize it, ask questions, find important messages, search saved chats, and detect topics without sending chat data to a cloud API.
 
-## 🚀 Features
+## Current Features
 
-- Paste long chat conversations (WhatsApp / Discord / Slack style)
-- AI-generated structured summary:
-  - 🧠 Main Topics
-  - ✅ Decisions
-  - 🛠 Action Items
-- Optimized for large chats using chunking
-- Runs **fully locally** (no paid APIs)
-- ChatGPT-style dark UI
-- Export summary:
-  - 📋 Copy to clipboard
-  - 📄 Download as `.txt`
+- Paste long chat conversations.
+- Upload WhatsApp ZIP exports without media.
+- Summarize chats with a local Ollama model.
+- Ask questions using only the chat text.
+- Analyze participant/message activity.
+- Detect cleaner topics while ignoring filler such as thank-you messages.
+- Save chats into local private memory.
+- Search current and saved chats.
+- Show only important messages with Noise Killer.
+- Explain confusing chat context for busy students.
+- Export summaries as text, Markdown, JSON, or action-only text.
 
----
+## Tech Stack
 
-## 🧠 How It Works (High Level)
+- Frontend: React, Vite, JSZip, CSS
+- Backend: FastAPI, Requests, NumPy, scikit-learn
+- Local AI: Ollama with `mistral:latest` and/or `phi3:latest`
 
-1. User pastes a long chat conversation
-2. Backend preprocesses and cleans the text
-3. Chat is summarized using a **local LLM (Mistral via Ollama)**
-4. Output is structured into topics, decisions, and actions
-5. Frontend renders a clean, readable summary
+## Run Locally
 
----
+Start Ollama:
 
-## 🏗️ Architecture
-
-Frontend (React)
-|
-| POST /summarize
-|
-Backend (FastAPI)
-|
-| Prompt + Chunking
-|
-Local LLM (Ollama - Mistral 7B)
-
-
----
-
-## 🛠️ Tech Stack
-
-### Frontend
-- React (Vite)
-- Plain CSS / Inline styles
-- Fetch API
-
-### Backend
-- Python
-- FastAPI
-- Requests
-
-### AI / ML
-- Ollama
-- Mistral 7B (local inference)
-
----
-
-## ⚡ Performance Optimizations
-
-- Chunking for very large chats
-- Fast-path summarization for smaller chats
-- Token limits and low-temperature decoding
-- Reduced LLM calls for lower latency
-
-Typical summary time (local):
-- 100–150 messages → ~10–15 seconds
-
----
-
-## ▶️ Running the Project Locally
-
-### 1️⃣ Start the local LLM
-```bash
-ollama pull mistral
+```powershell
 ollama serve
+ollama pull mistral
+ollama pull phi3
+```
+
+Start the backend:
+
+```powershell
+cd D:\chat-summarizer\backend
+.\venv\Scripts\python.exe -m uvicorn main:app --host 127.0.0.1 --port 8000
+```
+
+Start the frontend:
+
+```powershell
+cd D:\chat-summarizer\frontend
+npm install
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173/
+```
+
+## Privacy
+
+Saved chat memory is written locally to `backend/memory_store.json`. That file is ignored by Git.

@@ -2,6 +2,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from pydantic import BaseModel
 import os
+import json
+import uuid
+from datetime import datetime
 
 os.environ.setdefault("LOKY_MAX_CPU_COUNT", str(os.cpu_count() or 1))
 
@@ -11,7 +14,7 @@ import re
 from collections import Counter
 import numpy as np
 
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, ENGLISH_STOP_WORDS
 
 warnings.filterwarnings(
     "ignore",
@@ -70,6 +73,27 @@ class TopicsRequest(BaseModel):
     model: str = "fast"
 
 
+class MemoryImportRequest(BaseModel):
+    chat_text: str
+    name: str = "Untitled chat"
+
+
+class SearchRequest(BaseModel):
+    query: str
+    chat_text: str = ""
+    limit: int = 8
+
+
+class NoiseRequest(BaseModel):
+    chat_text: str
+    limit: int = 30
+
+
+class ExplainRequest(BaseModel):
+    chat_text: str
+    model: str = "fast"
+
+
 TOPIC_STOPWORDS = {
     "aadithya", "aadhitya", "anagha", "arun", "arunprabhu", "arunprabuuuuuu",
     "arif", "durka", "mahalakshmi", "manjula", "sasikala", "vinothkumar",
@@ -97,9 +121,17 @@ FILLER_PATTERNS = [
 
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
+MEMORY_FILE = os.path.join(os.path.dirname(__file__), "memory_store.json")
 OLLAMA_MODELS = {
     "accurate": ["mistral:latest", "phi3:latest"],
     "fast": ["phi3:latest", "mistral:latest"],
+}
+
+IMPORTANT_WORDS = {
+    "announce", "announcement", "assignment", "attendance", "bring", "class",
+    "collect", "deadline", "due", "exam", "form", "hall", "important",
+    "material", "meeting", "placement", "project", "remedial", "report",
+    "submit", "test", "ticket", "tomorrow", "venue", "verify",
 }
 
 
@@ -136,6 +168,26 @@ def clean_chat(chat):
     return chat.strip()
 
 
+def read_memory_store():
+    if not os.path.exists(MEMORY_FILE):
+        return {"chats": []}
+
+    try:
+        with open(MEMORY_FILE, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError):
+        return {"chats": []}
+
+    if "chats" not in data or not isinstance(data["chats"], list):
+        return {"chats": []}
+    return data
+
+
+def write_memory_store(data):
+    with open(MEMORY_FILE, "w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+
+
 def select_last_messages(chat, last_n):
     lines = [line for line in chat.split("\n") if line.strip()]
     if last_n and last_n > 0:
@@ -143,23 +195,158 @@ def select_last_messages(chat, last_n):
     return "\n".join(lines)
 
 
+def parse_chat_messages(chat):
+    messages = []
+    active = None
+
+    for line in chat.split("\n"):
+        if not line.strip():
+            continue
+
+        metadata = parse_chat_metadata(line)
+        has_metadata = bool(metadata["date"] or metadata["user"])
+
+        if has_metadata:
+            if active:
+                messages.append(active)
+            active = {
+                "date": metadata["date"],
+                "time": metadata["time"],
+                "user": metadata["user"] or "Unknown",
+                "text": metadata["text"],
+                "raw": line.strip(),
+            }
+            continue
+
+        if active:
+            active["text"] = f"{active['text']}\n{line.strip()}".strip()
+            active["raw"] = f"{active['raw']}\n{line.strip()}".strip()
+        else:
+            active = {
+                "date": "",
+                "time": "",
+                "user": "Unknown",
+                "text": line.strip(),
+                "raw": line.strip(),
+            }
+
+    if active:
+        messages.append(active)
+
+    return messages
+
+
+def summarize_memory_stats(chats):
+    total_messages = sum(chat.get("message_count", 0) for chat in chats)
+    participants = set()
+    dates = set()
+
+    for chat in chats:
+        participants.update(chat.get("participants", []))
+        dates.update(chat.get("dates", []))
+
+    return {
+        "chat_count": len(chats),
+        "total_messages": total_messages,
+        "participants": sorted(participants),
+        "date_count": len(dates),
+    }
+
+
+def search_messages(query, messages, limit):
+    terms = [
+        term for term in re.findall(r"[a-zA-Z0-9']+", query.lower())
+        if len(term) > 1
+    ]
+    if not terms:
+        return []
+
+    matches = []
+    for message in messages:
+        haystack = f"{message.get('user', '')} {message.get('text', '')}".lower()
+        score = sum(1 for term in terms if term in haystack)
+        if score == 0:
+            continue
+
+        matches.append({
+            "score": score,
+            "chat_id": message.get("chat_id", ""),
+            "chat_name": message.get("chat_name", ""),
+            "date": message.get("date", ""),
+            "user": message.get("user", ""),
+            "text": message.get("text", ""),
+            "raw": message.get("raw", ""),
+        })
+
+    matches.sort(key=lambda item: (item["score"], len(item["text"])), reverse=True)
+    return matches[:max(1, limit)]
+
+
+def message_importance_score(message):
+    text = message.get("text", "")
+    normalized = normalize_topic_text(text)
+    words = set(normalized.split())
+    score = len(words & IMPORTANT_WORDS)
+
+    if re.search(r"\b(today|tomorrow|deadline|due|submit|bring|collect|exam|test)\b", text, re.I):
+        score += 2
+    if re.search(r"\b\d{1,2}[:/.-]\d{1,2}\b", text):
+        score += 1
+    if len(text) > 80:
+        score += 1
+    if is_filler_message(text):
+        score -= 3
+
+    return score
+
+
+def important_messages_from_chat(chat, limit=30):
+    messages = parse_chat_messages(chat)
+    ranked = []
+
+    for message in messages:
+        if is_noise(message["text"]):
+            continue
+
+        score = message_importance_score(message)
+        if score <= 0:
+            continue
+
+        ranked.append({
+            "score": score,
+            "date": message["date"],
+            "user": message["user"],
+            "text": message["text"],
+            "raw": message["raw"],
+        })
+
+    ranked.sort(key=lambda item: item["score"], reverse=True)
+    return ranked[:max(1, limit)]
+
+
 def parse_chat_metadata(line):
-    line = line.strip()
+    line = re.sub(r"[\u200e\u200f\ufeff]", "", line).strip()
+    time = r"(?P<time>\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AP]M)?)"
+    date = r"(?P<date>\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4})"
+    sender = r"(?P<user>[^:\n]+):\s*(?P<text>.*)$"
     patterns = [
-        r"^\[(?P<time>\d{1,2}:\d{2}),\s*(?P<date>\d{1,2}/\d{1,2}/\d{2,4})\]\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
-        r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),?\s*(?P<time>\d{1,2}:\d{2})(?:\s?[AP]M)?\s+-\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
+        rf"^\[{time},\s*{date}\]\s*{sender}",
+        rf"^\[{date},?\s+{time}\]\s*{sender}",
+        rf"^{date},?\s+{time}\s+-\s*{sender}",
+        rf"^\[{time}\]\s*{sender}",
     ]
 
     for pattern in patterns:
-        match = re.match(pattern, line)
+        match = re.match(pattern, line, re.I)
         if match:
             return {
-                "date": match.group("date").strip(),
+                "date": (match.groupdict().get("date") or "").strip(),
+                "time": match.group("time").strip(),
                 "user": match.group("user").strip(),
                 "text": match.group("text").strip(),
             }
 
-    return {"date": "", "user": "", "text": line}
+    return {"date": "", "time": "", "user": "", "text": line}
 
 
 def split_chat_sections(chat, max_lines=180):
@@ -212,22 +399,8 @@ def is_noise(text):
 
 
 def parse_chat_line(line):
-    line = line.strip()
-    patterns = [
-        r"^\[(?P<time>\d{1,2}:\d{2}),\s*(?P<date>\d{1,2}/\d{1,2}/\d{2,4})\]\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
-        r"^(?P<date>\d{1,2}/\d{1,2}/\d{2,4}),?\s*(?P<time>\d{1,2}:\d{2})(?:\s?[AP]M)?\s+-\s*(?P<user>[^:]+):\s*(?P<text>.*)$",
-    ]
-
-    for pattern in patterns:
-        match = re.match(pattern, line)
-        if match:
-            return {
-                "raw": line,
-                "user": match.group("user").strip(),
-                "text": match.group("text").strip(),
-            }
-
-    return {"raw": line, "user": "", "text": line}
+    metadata = parse_chat_metadata(line)
+    return {"raw": line.strip(), "user": metadata["user"], "text": metadata["text"]}
 
 
 def normalize_topic_text(text):
@@ -433,6 +606,114 @@ def root():
     return {"status": "Backend running"}
 
 
+@app.get("/memory")
+def get_memory():
+    store = read_memory_store()
+    chats = store["chats"]
+    return {
+        "summary": summarize_memory_stats(chats),
+        "chats": [
+            {
+                "id": chat["id"],
+                "name": chat["name"],
+                "created_at": chat["created_at"],
+                "message_count": chat["message_count"],
+                "participants": chat["participants"],
+                "dates": chat["dates"],
+            }
+            for chat in chats
+        ],
+    }
+
+
+@app.post("/memory/import")
+def import_memory(req: MemoryImportRequest):
+    chat = clean_chat(req.chat_text)
+    messages = parse_chat_messages(chat)
+    if not messages:
+        return {"error": "No messages found."}
+
+    participants = sorted({message["user"] for message in messages if message["user"] and message["user"] != "Unknown"})
+    dates = sorted({message["date"] for message in messages if message["date"]})
+    chat_id = str(uuid.uuid4())
+    now = datetime.now().isoformat(timespec="seconds")
+
+    store = read_memory_store()
+    store["chats"].append({
+        "id": chat_id,
+        "name": req.name.strip() or "Untitled chat",
+        "created_at": now,
+        "message_count": len(messages),
+        "participants": participants,
+        "dates": dates,
+        "messages": messages,
+    })
+    write_memory_store(store)
+
+    return {
+        "id": chat_id,
+        "message_count": len(messages),
+        "participants": participants,
+        "dates": dates,
+    }
+
+
+@app.post("/memory/search")
+def search_memory(req: SearchRequest):
+    store = read_memory_store()
+    memory_messages = []
+
+    for chat in store["chats"]:
+        for message in chat.get("messages", []):
+            memory_messages.append({
+                **message,
+                "chat_id": chat["id"],
+                "chat_name": chat["name"],
+            })
+
+    pasted_messages = [
+        {**message, "chat_id": "current", "chat_name": "Current chat"}
+        for message in parse_chat_messages(req.chat_text)
+    ]
+    matches = search_messages(req.query, pasted_messages + memory_messages, req.limit)
+    return {"matches": matches}
+
+
+@app.post("/noise")
+def noise_killer(req: NoiseRequest):
+    return {"important_messages": important_messages_from_chat(req.chat_text, req.limit)}
+
+
+@app.post("/explain")
+def explain_chat(req: ExplainRequest):
+    chat = clean_chat(req.chat_text)
+    important = important_messages_from_chat(chat, 12)
+    important_text = "\n".join(item["raw"] for item in important) or chat[:3000]
+
+    prompt = f"""
+Explain what is happening in this chat for a busy student.
+Rules:
+- Use only the chat lines below.
+- Be direct and practical.
+- Separate announcements, confusing context, and what the reader should notice.
+- If the chat is unclear, say what is unclear.
+
+CHAT LINES:
+{important_text}
+
+EXPLANATION:
+"""
+
+    result = ollama_generate(prompt, 260, req.model)
+    if not result:
+        result = "I could not reach the local model. The important messages are listed in Noise Killer."
+
+    return {
+        "explanation": result,
+        "evidence": important,
+    }
+
+
 @app.post("/summarize")
 def summarize(req: SummarizeRequest):
     chat = select_last_messages(clean_chat(req.chat_text), req.last_n)
@@ -493,8 +774,9 @@ ANSWER:
 
 @app.post("/analytics")
 def analytics(req: AnalyticsRequest):
-    chat = select_last_messages(req.chat_text, req.last_n)
-    messages = [m.strip() for m in chat.split("\n") if m.strip()]
+    messages = parse_chat_messages(req.chat_text)
+    if req.last_n > 0:
+        messages = messages[-req.last_n:]
     total = len(messages)
 
     word_count = {}
@@ -502,22 +784,28 @@ def analytics(req: AnalyticsRequest):
     day_count = {}
     hour_count = {}
 
+    sender_words = {
+        word for message in messages
+        for word in re.findall(r"[a-zA-Z']+", message["user"].lower())
+    }
     for msg in messages:
-        match = re.match(
-            r"^(\d{1,2}/\d{1,2}/\d{2,4}),?\s+(\d{1,2}):(\d{2})(?:\s?[AP]M)?\s+-\s+([^:]+):",
-            msg,
-        )
-        if match:
-            day = match.group(1)
-            hour = match.group(2)
-            user = match.group(4).strip()
+        day, user = msg["date"], msg["user"]
+        if day:
             day_count[day] = day_count.get(day, 0) + 1
-            hour_count[hour] = hour_count.get(hour, 0) + 1
+        if user != "Unknown":
             messages_per_user[user] = messages_per_user.get(user, 0) + 1
+        time_match = re.fullmatch(r"(\d{1,2}):\d{2}(?::\d{2})?\s*([AP]M)?", msg["time"], re.I)
+        if time_match:
+            hour = int(time_match.group(1))
+            period = (time_match.group(2) or "").upper()
+            if period:
+                hour = hour % 12 + (12 if period == "PM" else 0)
+            hour_label = f"{hour:02d}:00"
+            hour_count[hour_label] = hour_count.get(hour_label, 0) + 1
 
-        words = re.findall(r"[a-zA-Z']+", msg.lower())
+        words = re.findall(r"[a-zA-Z']+", msg["text"].lower())
         for word in words:
-            if len(word) < 3:
+            if len(word) < 3 or word in ENGLISH_STOP_WORDS or word in sender_words:
                 continue
             word_count[word] = word_count.get(word, 0) + 1
 
@@ -540,40 +828,25 @@ def analytics(req: AnalyticsRequest):
 
 @app.post("/topics")
 def topics(req: TopicsRequest):
-    chat = select_last_messages(req.chat_text, req.last_n)
+    messages = parse_chat_messages(req.chat_text)
+    # Plain pasted text has no message boundaries; treat each nonempty line as an entry.
+    if messages and all(message["user"] == "Unknown" for message in messages):
+        messages = [parse_chat_line(line) for line in req.chat_text.splitlines() if line.strip()]
+    if req.last_n > 0:
+        messages = messages[-req.last_n:]
     parsed_messages = []
 
-    for line in chat.split("\n"):
-        if not line.strip() or is_noise(line):
+    for parsed in messages:
+        if is_noise(parsed["text"]) or is_filler_message(parsed["text"]):
             continue
 
-        parsed = parse_chat_line(line)
-        if is_filler_message(parsed["text"]) and parsed_messages and not parsed["user"] and not parsed_messages[-1]["user"]:
-            parsed_messages[-1]["raw"] = f"{parsed_messages[-1]['raw']}\n{parsed['raw']}"
-            parsed_messages[-1]["text"] = f"{parsed_messages[-1]['text']} {parsed['text']}"
-            parsed_messages[-1]["normalized"] = normalize_topic_text(parsed_messages[-1]["text"])
-            continue
-
-        if is_filler_message(parsed["text"]):
-            continue
-
-        normalized = normalize_topic_text(f"{parsed['user']} {parsed['text']}")
+        normalized = normalize_topic_text(parsed['text'])
         if not normalized:
             continue
 
-        if parsed_messages and not parsed["user"] and not parsed_messages[-1]["user"]:
-            parsed_messages[-1]["raw"] = f"{parsed_messages[-1]['raw']}\n{parsed['raw']}"
-            parsed_messages[-1]["text"] = f"{parsed_messages[-1]['text']} {parsed['text']}"
-            parsed_messages[-1]["normalized"] = normalize_topic_text(parsed_messages[-1]["text"])
-        else:
-            parsed_messages.append({
-                "raw": parsed["raw"],
-                "user": parsed["user"],
-                "text": parsed["text"],
-                "normalized": normalized,
-            })
+        parsed_messages.append({**parsed, "normalized": normalized})
 
-    if len(parsed_messages) < 2:
+    if not parsed_messages:
         return {"topics": []}
 
     normalized_messages = [message["normalized"] for message in parsed_messages]
@@ -582,7 +855,7 @@ def topics(req: TopicsRequest):
 
     vectorizer = TfidfVectorizer(
         stop_words="english",
-        max_df=0.85,
+        max_df=1.0,
         min_df=1,
         ngram_range=(1, 2),
     )
@@ -604,7 +877,7 @@ def topics(req: TopicsRequest):
         cluster_topic_texts = [topic_texts[j] for j in idx]
         normalized_cluster = " ".join(normalized_messages[j] for j in idx)
 
-        if not cluster_msgs or len(normalized_cluster.split()) < 3:
+        if not cluster_msgs or len(normalized_cluster.split()) < 2:
             continue
 
         tfidf_sum = x_matrix[idx].sum(axis=0)
